@@ -62,6 +62,78 @@ def get_asset_path(filename):
     return os.path.join(base_path, 'assets', filename)
 
 # ============================================================================
+# JSON SETTINGS MANAGER
+# ============================================================================
+
+import json
+from pathlib import Path
+import base64
+
+class JsonSettings:
+    """Cross-platform JSON-based settings manager compatible with QSettings API."""
+    
+    def __init__(self, config_name="config.json"):
+        """Initialize settings with JSON file in the same directory as the script."""
+        self.config_path = Path(__file__).parent / config_name
+        self._settings = {}
+        self._load()
+    
+    def _load(self):
+        """Load settings from JSON file."""
+        if self.config_path.exists():
+            try:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    self._settings = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Warning: Could not load settings from {self.config_path}: {e}")
+                self._settings = {}
+    
+    def _save(self):
+        """Save settings to JSON file."""
+        try:
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(self._settings, f, indent=2, ensure_ascii=False)
+        except IOError as e:
+            print(f"Warning: Could not save settings to {self.config_path}: {e}")
+    
+    def value(self, key, default=None):
+        """Get a setting value (QSettings-compatible API)."""
+        value = self._settings.get(key, default)
+        
+        # If it's a base64-encoded QByteArray, decode it
+        if isinstance(value, str) and value.startswith("base64:"):
+            from PySide6.QtCore import QByteArray
+            try:
+                decoded = base64.b64decode(value[7:])
+                return QByteArray(decoded)
+            except Exception:
+                return default
+        
+        return value
+    
+    def setValue(self, key, value):
+        """Set a setting value and save immediately (QSettings-compatible API)."""
+        # Convert QByteArray to base64 string for JSON serialization
+        if hasattr(value, 'toBase64'):
+            # It's a QByteArray
+            value = "base64:" + value.toBase64().data().decode('utf-8')
+        
+        self._settings[key] = value
+        self._save()
+    
+    def allKeys(self):
+        """Return all setting keys (QSettings-compatible API)."""
+        return list(self._settings.keys())
+    
+    def fileName(self):
+        """Return the config file path (QSettings-compatible API)."""
+        return str(self.config_path)
+    
+    def contains(self, key):
+        """Check if a key exists (QSettings-compatible API)."""
+        return key in self._settings
+
+# ============================================================================
 # CONFIGURATION CONSTANTS
 # ============================================================================
 
@@ -2017,7 +2089,8 @@ class MainWindow(QMainWindow):
         self.resize(1100, 700)
         self.setWindowIcon(QIcon(get_asset_path("icon.ico")))
 
-        self.settings = QSettings("LithePlayer", "AudioPlayer")
+        # Use JSON-based settings instead of Windows Registry
+        self.settings = JsonSettings("lithe_player_config.json")
 
         self.icons = {
             "row_play": QIcon(get_asset_path("plplay.svg")),
