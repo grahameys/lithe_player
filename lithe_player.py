@@ -9,7 +9,7 @@ This application provides:
 - Customizable accent colors
 - Global media key support (Windows)
 
-Author: grahameys
+Author: grahameys (mainly!)
 """
 
 import sys
