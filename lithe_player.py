@@ -62,16 +62,39 @@ SPLASH_SCREEN_DURATION_MS = 3000
 # VLC ENVIRONMENT SETUP
 # ============================================================================
 
+def check_system_vlc():
+    """Check if VLC is installed system-wide and accessible."""
+    try:
+        # Try to create a VLC instance without specifying plugins
+        test_instance = vlc.Instance()
+        # If we can create an instance, VLC is available system-wide
+        print("✓ System-wide VLC installation detected")
+        return True
+    except Exception as e:
+        print(f"System-wide VLC not found: {e}")
+        return False
+
 def setup_vlc_environment():
-    """Configure VLC to use local plugin libraries from 'plugins' subfolder."""
+    """
+    Configure VLC environment.
+    Prefers system-wide VLC installation, falls back to local plugins if needed.
+    """
+    # First, try to use system-wide VLC
+    if check_system_vlc():
+        print("Using system-wide VLC installation")
+        return None  # Return None to indicate system VLC should be used
+    
+    # If system VLC not found, fall back to local plugins
+    print("System-wide VLC not available, checking for local plugins...")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     plugins_dir = os.path.join(script_dir, "plugins")
     
     if not os.path.exists(plugins_dir):
-        print(f"Warning: plugins directory not found at {plugins_dir}")
-        print("VLC will attempt to use system-installed libraries.")
+        print(f"⚠ Warning: No system VLC found and local plugins directory not found at {plugins_dir}")
+        print("VLC initialization may fail. Please install VLC or provide local plugins.")
         return None
     
+    # Configure environment for local plugins
     os.environ['VLC_PLUGIN_PATH'] = plugins_dir
     print(f"VLC plugin path set to: {plugins_dir}")
     
@@ -82,6 +105,7 @@ def setup_vlc_environment():
             os.environ['PATH'] = parent_dir + os.pathsep + os.environ['PATH']
             print(f"Added to PATH: {parent_dir}")
     
+    print(f"Using local VLC plugins from: {plugins_dir}")
     return plugins_dir
 
 # ============================================================================
@@ -398,7 +422,7 @@ class GaplessPlaybackManager:
             print(f"Gapless transition error: {e}")
             import traceback
             traceback.print_exc()
-            self._transition_triggered = Falsese
+            self._transition_triggered = False
     
     def _on_player_end(self, player, name):
         """Handle player end reached event."""
@@ -1094,19 +1118,23 @@ class AudioPlayerController:
     """Controller for gapless audio playback."""
 
     def __init__(self, view=None, eq_widget=None):
+        # Setup VLC environment (checks system VLC first, falls back to local plugins)
         plugins_dir = setup_vlc_environment()
         
-        if plugins_dir:
-            try:
+        # Create VLC instance
+        # If plugins_dir is None, use system VLC (no custom plugin path)
+        # If plugins_dir is set, use local plugins with explicit path
+        try:
+            if plugins_dir:
                 self.instance = vlc.Instance(f'--plugin-path={plugins_dir}')
-                print("VLC instance created with local plugins")
-            except Exception as e:
-                print(f"Failed to create VLC instance with local plugins: {e}")
-                print("Falling back to system VLC installation")
+                print("✓ VLC instance created with local plugins")
+            else:
                 self.instance = vlc.Instance()
-        else:
-            self.instance = vlc.Instance()
-            print("VLC instance created using system installation")
+                print("✓ VLC instance created using system installation")
+        except Exception as e:
+            print(f"❌ Failed to create VLC instance: {e}")
+            print("Please ensure VLC is installed on your system or provide local plugins.")
+            raise
         
         # Use gapless playback manager instead of single player
         self.gapless_manager = GaplessPlaybackManager(self.instance, eq_widget)
