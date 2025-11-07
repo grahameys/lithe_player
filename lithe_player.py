@@ -2047,41 +2047,131 @@ class MainWindow(QMainWindow):
         QSlider::handle:horizontal:pressed { background: #cccccc; }
     """
 
-    PLAYLIST_STYLE = """
-        QTableView {
-            background-color: rgba(255, 255, 255, 150);
-            alternate-background-color: rgba(240, 240, 240, 150);
-            border: none;
-            gridline-color: #ddd;
-            selection-background-color: transparent;
-            selection-color: inherit;
-            outline: none;
-        }
-        QTableView::item {
-            background-color: transparent;
-            padding: 4px 6px;
-            border: none;
-            outline: none;
-        }
-        QTableView::item:hover {
-            background: rgba(220, 238, 255, 50);
-            color: black;
-        }
-        QTableView::item:selected {
-            background: transparent;
-            color: inherit;
-            border: none;
-            outline: none;
-        }
-        QTableView::item:selected:hover {
-            background: rgba(220, 238, 255, 50);
-            color: black;
-        }
-        QTableView::item:focus {
-            border: none;
-            outline: none;
-        }
-    """
+    @staticmethod
+    def get_playlist_style():
+        """Generate theme-aware playlist stylesheet."""
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QPalette
+        
+        app = QApplication.instance()
+        if not app:
+            # Default to light theme
+            return """
+                QTableView {
+                    background-color: rgba(255, 255, 255, 150);
+                    alternate-background-color: rgba(240, 240, 240, 150);
+                    border: none;
+                    gridline-color: #ddd;
+                    selection-background-color: transparent;
+                    selection-color: inherit;
+                    outline: none;
+                }
+                QTableView::item {
+                    background-color: transparent;
+                    padding: 4px 6px;
+                    border: none;
+                    outline: none;
+                }
+                QTableView::item:hover {
+                    background: rgba(220, 238, 255, 50);
+                    color: black;
+                }
+                QTableView::item:selected {
+                    background: transparent;
+                    color: inherit;
+                    border: none;
+                    outline: none;
+                }
+                QTableView::item:selected:hover {
+                    background: rgba(220, 238, 255, 50);
+                    color: black;
+                }
+                QTableView::item:focus {
+                    border: none;
+                    outline: none;
+                }
+            """
+        
+        palette = app.palette()
+        base_color = palette.color(QPalette.Base)
+        is_dark = is_dark_color(base_color)
+        
+        if is_dark:
+            # Dark theme - semi-transparent dark backgrounds
+            return f"""
+                QTableView {{
+                    background-color: rgba({base_color.red()}, {base_color.green()}, {base_color.blue()}, 150);
+                    alternate-background-color: rgba({base_color.lighter(110).red()}, {base_color.lighter(110).green()}, {base_color.lighter(110).blue()}, 150);
+                    border: none;
+                    gridline-color: palette(mid);
+                    selection-background-color: transparent;
+                    selection-color: inherit;
+                    outline: none;
+                    color: palette(text);
+                }}
+                QTableView::item {{
+                    background-color: transparent;
+                    padding: 4px 6px;
+                    border: none;
+                    outline: none;
+                    color: palette(text);
+                }}
+                QTableView::item:hover {{
+                    background: palette(midlight);
+                    color: palette(text);
+                }}
+                QTableView::item:selected {{
+                    background: transparent;
+                    color: inherit;
+                    border: none;
+                    outline: none;
+                }}
+                QTableView::item:selected:hover {{
+                    background: palette(midlight);
+                    color: palette(text);
+                }}
+                QTableView::item:focus {{
+                    border: none;
+                    outline: none;
+                }}
+            """
+        else:
+            # Light theme - semi-transparent light backgrounds
+            return """
+                QTableView {
+                    background-color: rgba(255, 255, 255, 150);
+                    alternate-background-color: rgba(240, 240, 240, 150);
+                    border: none;
+                    gridline-color: #ddd;
+                    selection-background-color: transparent;
+                    selection-color: inherit;
+                    outline: none;
+                }
+                QTableView::item {
+                    background-color: transparent;
+                    padding: 4px 6px;
+                    border: none;
+                    outline: none;
+                }
+                QTableView::item:hover {
+                    background: rgba(220, 238, 255, 50);
+                    color: black;
+                }
+                QTableView::item:selected {
+                    background: transparent;
+                    color: inherit;
+                    border: none;
+                    outline: none;
+                }
+                QTableView::item:selected:hover {
+                    background: rgba(220, 238, 255, 50);
+                    color: black;
+                }
+                QTableView::item:focus {
+                    border: none;
+                    outline: none;
+                }
+            """
 
     def __init__(self):
         super().__init__()
@@ -2213,7 +2303,7 @@ class MainWindow(QMainWindow):
         self.playlist.setAlternatingRowColors(True)
         self.playlist.setIconSize(QSize(16, 16))
         self.playlist.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.playlist.setStyleSheet(self.PLAYLIST_STYLE)
+        self.playlist.setStyleSheet(self.get_playlist_style())
 
         header = self.playlist.horizontalHeader()
         header.setStretchLastSection(False)
