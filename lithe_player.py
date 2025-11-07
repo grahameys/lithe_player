@@ -567,12 +567,24 @@ class GaplessPlaybackManager:
         """Handle player end reached event."""
         print(f"\n!!! Player {name} reached end (transition_triggered={self._transition_triggered})")
         print(f"    Active player: {'A' if self.active_player == self.player_a else 'B'}")
-        print(f"    Standby player: {'A' if self.standby_player == self.player_a else 'B'}")
+        print(f"    Standby player: {'A' if self.standby_player == self.player_a else 'B' if self.standby_player else 'None'}")
         print(f"    next_track_path: {os.path.basename(self.next_track_path) if self.next_track_path else 'None'}")
+        print(f"    current_track_path: {os.path.basename(self.current_track_path) if self.current_track_path else 'None'}")
         
         # Only use fallback if we haven't already transitioned
         if self._transition_triggered:
             print("Transition already completed, ignoring end event")
+            return
+        
+        # Check if there's actually a next track to play
+        if not self.next_track_path:
+            print("No next track - playback complete")
+            self._transition_triggered = True
+            # Stop monitoring
+            self._stop_monitoring.set()
+            self.monitoring = False
+            # Emit signal that playback ended
+            self.signals.stop_equalizer.emit()
             return
         
         # Mark that we're handling the transition
@@ -1405,6 +1417,11 @@ class AudioPlayerController:
         self.current_index = index
         self.model.set_current_index(index)
         
+        # CRITICAL: If this is the last track, clear preload state
+        if next_path is None:
+            print(f"Playing last track (index {index}), clearing preload state...")
+            self._preload_next()
+        
         # Update player reference for legacy code
         self.player = self.gapless_manager.get_active_player()
         
@@ -1443,7 +1460,18 @@ class AudioPlayerController:
             else:
                 print(f"No valid path for track {next_index}")
         else:
-            print(f"No next track to preload (current: {self.current_index}, total: {self.model.rowCount()})")
+            # No more tracks to preload - clear the preload state completely
+            print("!!! Reached last track - CLEARING ALL PRELOAD STATE !!!")
+            with self.gapless_manager.preload_lock:
+                self.gapless_manager.next_track_path = None
+                # Stop the standby player and clear its media completely
+                if self.gapless_manager.standby_player:
+                    print(f"    Stopping and clearing standby player {'A' if self.gapless_manager.standby_player == self.gapless_manager.player_a else 'B'}")
+                    self.gapless_manager.standby_player.stop()
+                    # Set to None/empty media to truly clear it
+                    self.gapless_manager.standby_player.set_media(None)
+                print(f"    next_track_path is now: {self.gapless_manager.next_track_path}")
+                print(f"    Standby player media cleared")
 
     def pause(self):
         """Pause playback."""
