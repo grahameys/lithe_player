@@ -1948,7 +1948,7 @@ class MainWindow(QMainWindow):
         }}
         QTreeView::item {{
             padding: 0px 4px;
-            min-height: 15px;
+            min-height: 12px;
             border: none;
             outline: none;
             color: #000000;
