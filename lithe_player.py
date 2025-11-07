@@ -1828,12 +1828,14 @@ class MainWindow(QMainWindow):
             background-color: #fafafa;
             alternate-background-color: #f0f0f0;
             border: none;
+            color: #000000;
         }}
         QTreeView::item {{
             padding: 0px 4px;
             min-height: 15px;
             border: none;
             outline: none;
+            color: #000000;
         }}
         QTreeView::item:hover {{
             background: #dceeff;
