@@ -571,6 +571,12 @@ class GaplessPlaybackManager:
         print(f"    next_track_path: {os.path.basename(self.next_track_path) if self.next_track_path else 'None'}")
         print(f"    current_track_path: {os.path.basename(self.current_track_path) if self.current_track_path else 'None'}")
         
+        # CRITICAL: Ignore end events from the standby player!
+        # Only the active player should trigger transitions
+        if player != self.active_player:
+            print(f"Ignoring end event from {'standby' if player == self.standby_player else 'inactive'} player")
+            return
+        
         # Only use fallback if we haven't already transitioned
         if self._transition_triggered:
             print("Transition already completed, ignoring end event")
