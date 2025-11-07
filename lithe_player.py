@@ -1412,6 +1412,20 @@ class DirectoryBrowserDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         """Paint the delegate."""
         opt = QStyleOptionViewItem(option)
+        
+        # Check if this is a file (not a directory) by checking if it has children
+        model = index.model()
+        is_directory = model.isDir(index)
+        
+        # If it's a file (not a directory), reduce indentation by one level
+        # so files align with their parent folder instead of being indented further
+        if not is_directory and self.tree_view:
+            # Get the indentation amount
+            indentation = self.tree_view.indentation()
+            
+            # Shift the rect left by one indentation level
+            # This makes files align with their parent folder
+            opt.rect.adjust(-indentation, 0, 0, 0)
 
         if (option.state & QStyle.State_Selected) and self.highlight_color:
             painter.save()
@@ -2077,6 +2091,9 @@ class MainWindow(QMainWindow):
         
         # Set indentation for subfolder hierarchy visualization
         self.tree.setIndentation(15)
+        
+        # Disable root decoration (removes the space for branch indicators)
+        self.tree.setRootIsDecorated(False)
 
         for col in range(1, self.fs_model.columnCount()):
             self.tree.hideColumn(col)
