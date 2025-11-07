@@ -1146,6 +1146,9 @@ class AudioPlayerController:
                     self.current_index = i
                     self.model.set_current_index(i)
                     
+                    # Update player reference so icon checks the correct active player
+                    self.player = self.gapless_manager.get_active_player()
+                    
                     if self.view:
                         self.view.clearSelection()
                         self.view.selectRow(i)
@@ -1168,6 +1171,12 @@ class AudioPlayerController:
                     # CRITICAL: Preload next track for continuous gapless playback
                     print(f"Track changed to index {i}, preloading next...")
                     self._preload_next()
+                    
+                    # Update UI to show correct playback state and icon
+                    if main_window:
+                        main_window.update_playback_ui()
+                        main_window.update_playpause_icon()
+                    
                     break
 
     def set_model(self, model):
