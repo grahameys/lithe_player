@@ -1468,7 +1468,7 @@ class PlaylistView(QTableView):
 
     def mouseMoveEvent(self, event):
         """Handle mouse move events for hover tracking."""
-        index = self.indexAt(event.pos())
+        index = self.indexAt(event.position().toPoint())
         delegate = self.itemDelegate()
         if hasattr(delegate, "set_hover_row"):
             delegate.set_hover_row(index.row() if index.isValid() else -1)
@@ -1484,7 +1484,7 @@ class PlaylistView(QTableView):
     def mousePressEvent(self, event):
         """Handle mouse press events for toggle selection."""
         if event.button() == Qt.LeftButton:
-            index = self.indexAt(event.pos())
+            index = self.indexAt(event.position().toPoint())
             if index.isValid():
                 if self.selectionModel().isSelected(index):
                     self.clearSelection()
