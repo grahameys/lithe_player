@@ -46,6 +46,20 @@ from mutagen.flac import FLAC
 from mutagen.mp4 import MP4
 
 # ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def get_asset_path(filename):
+    """Get absolute path to asset file, works for dev and PyInstaller."""
+    if getattr(sys, 'frozen', False):
+        # Running in PyInstaller bundle
+        base_path = sys._MEIPASS
+    else:
+        # Running in normal Python environment
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, 'assets', filename)
+
+# ============================================================================
 # CONFIGURATION CONSTANTS
 # ============================================================================
 
@@ -1443,8 +1457,10 @@ class AlbumArtLabel(QLabel):
 class PlaylistView(QTableView):
     """QTableView with watermark and row-wide hover support."""
 
-    def __init__(self, logo_path="assets/logo.png", parent=None):
+    def __init__(self, logo_path=None, parent=None):
         super().__init__(parent)
+        if logo_path is None:
+            logo_path = get_asset_path("logo.png")
         self.logo = QPixmap(logo_path)
         self.setMouseTracking(True)
 
@@ -1500,7 +1516,7 @@ class PeakTransparencyDialog(QWidget):
     def __init__(self, current_alpha=255, parent=None):
         super().__init__(parent, Qt.Window)
         self.setWindowTitle("Peak Indicator Transparency")
-        self.setWindowIcon(QIcon("assets/icon.ico"))
+        self.setWindowIcon(QIcon(get_asset_path("icon.ico")))
         self.resize(400, 150)
         
         layout = QVBoxLayout(self)
@@ -1587,7 +1603,7 @@ class FontSelectionDialog(QWidget):
     def __init__(self, current_font=None, title="Font Selection", parent=None):
         super().__init__(parent, Qt.Window)
         self.setWindowTitle(title)
-        self.setWindowIcon(QIcon("assets/icon.ico"))
+        self.setWindowIcon(QIcon(get_asset_path("icon.ico")))
         self.resize(450, 250)
         
         if current_font is None:
@@ -1971,17 +1987,17 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Lithe Player")
         self.resize(1100, 700)
-        self.setWindowIcon(QIcon("assets/icon.ico"))
+        self.setWindowIcon(QIcon(get_asset_path("icon.ico")))
 
         self.settings = QSettings("LithePlayer", "AudioPlayer")
 
         self.icons = {
-            "row_play": QIcon("assets/plplay.svg"),
-            "row_play_white": QIcon("assets/plplaywhite.svg"),
-            "row_pause": QIcon("assets/plpause.svg"),
-            "row_pause_white": QIcon("assets/plpausewhite.svg"),
-            "ctrl_play": QIcon("assets/play.svg"),
-            "ctrl_pause": QIcon("assets/pause.svg"),
+            "row_play": QIcon(get_asset_path("plplay.svg")),
+            "row_play_white": QIcon(get_asset_path("plplaywhite.svg")),
+            "row_pause": QIcon(get_asset_path("plpause.svg")),
+            "row_pause_white": QIcon(get_asset_path("plpausewhite.svg")),
+            "ctrl_play": QIcon(get_asset_path("play.svg")),
+            "ctrl_pause": QIcon(get_asset_path("pause.svg")),
         }
 
         self._setup_ui()
@@ -2086,7 +2102,7 @@ class MainWindow(QMainWindow):
         playlist_layout.setContentsMargins(0, 0, 0, 0)
 
         self.playlist_model = PlaylistModel(controller=None, icons=self.icons)
-        self.playlist = PlaylistView("assets/logo.png")
+        self.playlist = PlaylistView(get_asset_path("logo.png"))
         self.playlist.setModel(self.playlist_model)
         self.playlist.setSelectionBehavior(QTableView.SelectRows)
         self.playlist.setSelectionMode(QTableView.SingleSelection)
@@ -2120,10 +2136,10 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         controls.addStretch(1)
         
-        self.btn_prev = self._create_button("assets/prev.svg", 24)
-        self.btn_playpause = self._create_button("assets/play.svg", 24)
-        self.btn_stop = self._create_button("assets/stop.svg", 24)
-        self.btn_next = self._create_button("assets/next.svg", 24)
+        self.btn_prev = self._create_button(get_asset_path("prev.svg"), 24)
+        self.btn_playpause = self._create_button(get_asset_path("play.svg"), 24)
+        self.btn_stop = self._create_button(get_asset_path("stop.svg"), 24)
+        self.btn_next = self._create_button(get_asset_path("next.svg"), 24)
         
         for btn in [self.btn_prev, self.btn_playpause, self.btn_stop, self.btn_next]:
             btn.setStyleSheet(self.BUTTON_STYLE)
@@ -2746,10 +2762,10 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("Lithe Player")
-    app.setWindowIcon(QIcon("assets/icon.ico"))
+    app.setWindowIcon(QIcon(get_asset_path("icon.ico")))
 
     # Create splash screen
-    splash_pix = QPixmap("assets/splash.png")
+    splash_pix = QPixmap(get_asset_path("splash.png"))
     splash = QSplashScreen(splash_pix)
     splash.show()
     app.processEvents()
