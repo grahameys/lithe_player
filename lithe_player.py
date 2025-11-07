@@ -2063,8 +2063,8 @@ class MainWindow(QMainWindow):
         self.tree.sortByColumn(0, Qt.AscendingOrder)
         self.tree.header().hide()
         
-        # Remove indentation to eliminate space beside folder names
-        self.tree.setIndentation(0)
+        # Set indentation for subfolder hierarchy visualization
+        self.tree.setIndentation(15)
 
         for col in range(1, self.fs_model.columnCount()):
             self.tree.hideColumn(col)
