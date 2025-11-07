@@ -1137,15 +1137,23 @@ class AudioPlayerController:
         # Setup VLC environment (checks system VLC first, falls back to local plugins)
         plugins_dir = setup_vlc_environment()
         
+        # VLC options to suppress verbose warnings and handle plugin cache
+        vlc_options = [
+            '--quiet',                    # Suppress most messages
+            '--no-video-title-show',      # Don't show video title on playback
+            '--reset-plugins-cache',      # Reset plugin cache to avoid stale warnings
+        ]
+        
         # Create VLC instance
         # If plugins_dir is None, use system VLC (no custom plugin path)
         # If plugins_dir is set, use local plugins with explicit path
         try:
             if plugins_dir:
-                self.instance = vlc.Instance(f'--plugin-path={plugins_dir}')
+                vlc_options.append(f'--plugin-path={plugins_dir}')
+                self.instance = vlc.Instance(vlc_options)
                 print("✓ VLC instance created with local plugins")
             else:
-                self.instance = vlc.Instance()
+                self.instance = vlc.Instance(vlc_options)
                 print("✓ VLC instance created using system installation")
         except Exception as e:
             print(f"❌ Failed to create VLC instance: {e}")
