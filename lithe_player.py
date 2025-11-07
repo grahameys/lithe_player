@@ -61,6 +61,57 @@ def get_asset_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, 'assets', filename)
 
+def get_themed_icon(filename):
+    """Get theme-aware icon by modifying SVG colors based on system theme."""
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QIcon, QPixmap, QPalette, QColor, QImage
+    from PySide6.QtSvg import QSvgRenderer
+    from PySide6.QtCore import QByteArray, Qt
+    
+    svg_path = get_asset_path(filename)
+    
+    # Read SVG file
+    try:
+        with open(svg_path, 'r', encoding='utf-8') as f:
+            svg_content = f.read()
+    except:
+        # If we can't read it, return regular icon
+        return QIcon(svg_path)
+    
+    # Check if we need light or dark icon
+    app = QApplication.instance()
+    use_light_icon = False
+    if app:
+        palette = app.palette()
+        base_color = palette.color(QPalette.Base)
+        use_light_icon = is_dark_color(base_color)
+    
+    # Replace dark colors with light colors for dark theme
+    if use_light_icon:
+        # Replace common dark colors with white/light colors
+        svg_content = svg_content.replace('stroke="#1C274C"', 'stroke="#FFFFFF"')
+        svg_content = svg_content.replace('fill="#1C274C"', 'fill="#FFFFFF"')
+        svg_content = svg_content.replace('stroke="#000000"', 'stroke="#FFFFFF"')
+        svg_content = svg_content.replace('fill="#000000"', 'fill="#FFFFFF"')
+        svg_content = svg_content.replace('stroke="#000"', 'stroke="#FFF"')
+        svg_content = svg_content.replace('fill="#000"', 'fill="#FFF"')
+    
+    # Create icon from modified SVG with proper alpha channel support
+    renderer = QSvgRenderer(QByteArray(svg_content.encode('utf-8')))
+    
+    # Use QImage with alpha channel for proper transparency
+    image = QImage(48, 48, QImage.Format_ARGB32)
+    image.fill(Qt.transparent)
+    
+    from PySide6.QtGui import QPainter
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.Antialiasing)
+    renderer.render(painter)
+    painter.end()
+    
+    pixmap = QPixmap.fromImage(image)
+    return QIcon(pixmap)
+
 # ============================================================================
 # JSON SETTINGS MANAGER
 # ============================================================================
@@ -1137,17 +1188,31 @@ class PlaylistModel(QAbstractTableModel):
         return None
 
     def _get_playback_icon(self):
-        """Get the appropriate playback icon based on state."""
+        """Get the appropriate playback icon based on state and theme."""
         if not self.controller:
             return None
         
-        is_dark = self.highlight_color and is_dark_color(self.highlight_color)
+        # Always check system theme for icon color
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QPalette
+        
+        use_white_icon = False
+        app = QApplication.instance()
+        if app:
+            base_color = app.palette().color(QPalette.Base)
+            use_white_icon = is_dark_color(base_color)
+        
+        # If there's a highlight color, also check if that's dark
+        # (for the currently playing row with custom highlight)
+        if self.highlight_color:
+            use_white_icon = is_dark_color(self.highlight_color)
+        
         is_playing = self.controller.player.is_playing()
         
         if is_playing:
-            return self.icons.get("row_play_white" if is_dark else "row_play")
+            return self.icons.get("row_play_white" if use_white_icon else "row_play")
         else:
-            return self.icons.get("row_pause_white" if is_dark else "row_pause")
+            return self.icons.get("row_pause_white" if use_white_icon else "row_pause")
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         """Return header data."""
@@ -1461,7 +1526,23 @@ class PlayingRowDelegate(QStyledItemDelegate):
 
         if index.row() == self.hover_row:
             painter.save()
-            painter.fillRect(opt.rect, QColor(220, 238, 255, 100))
+            # Use theme-aware hover color
+            from PySide6.QtWidgets import QApplication
+            from PySide6.QtGui import QPalette as QtPalette
+            app = QApplication.instance()
+            if app:
+                app_palette = app.palette()
+                base_color = app_palette.color(QtPalette.Base)
+                if is_dark_color(base_color):
+                    # Dark theme - lighter semi-transparent overlay
+                    hover_color = QColor(base_color.lighter(130))
+                    hover_color.setAlpha(100)
+                else:
+                    # Light theme - blue semi-transparent overlay
+                    hover_color = QColor(220, 238, 255, 100)
+            else:
+                hover_color = QColor(220, 238, 255, 100)
+            painter.fillRect(opt.rect, hover_color)
             painter.restore()
 
         if (option.state & QStyle.State_Selected) and index.row() != self.model.current_index:
@@ -1939,113 +2020,266 @@ class GlobalMediaKeyHandler(QAbstractNativeEventFilter):
 class MainWindow(QMainWindow):
     """Main application window."""
 
-    TREE_STYLE_TEMPLATE = """
-        QTreeView {{
-            background-color: #fafafa;
-            alternate-background-color: #f0f0f0;
-            border: none;
-            color: #000000;
-        }}
-        QTreeView::item {{
-            padding: 0px 4px;
-            min-height: 12px;
-            border: none;
-            outline: none;
-            color: #000000;
-        }}
-        QTreeView::item:hover {{
-            background: #dceeff;
-            color: black;
-            border: none;
-            outline: none;
-            border-radius: 0px;
-        }}
-        QTreeView::item:selected {{
-            background: {color};
-            color: {text_color};
-            border: 1px solid transparent;
-            outline: transparent;
-            border-radius: 0px;
-        }}
-        QTreeView::item:selected:hover,
-        QTreeView::item:selected:active,
-        QTreeView::item:selected:!active,
-        QTreeView::item:selected:pressed {{
-            background: {color};
-            color: {text_color};
-            border: 1px solid transparent;
-            outline: transparent;
-            border-radius: 0px;
-        }}
-        QTreeView::item:focus {{
-            border: 1px solid transparent;
-            outline: transparent;
-        }}
-        QTreeView::branch {{
-            background: transparent;
-            width: 0px;
-            border: none;
-        }}
-        QTreeView::branch:has-siblings:!adjoins-item,
-        QTreeView::branch:has-siblings:adjoins-item,
-        QTreeView::branch:!has-children:!has-siblings:adjoins-item {{
-            border-image: none;
-            image: none;
-            width: 0px;
-        }}
-        QTreeView::branch:has-children:!has-siblings:closed,
-        QTreeView::branch:closed:has-children:has-siblings {{
-            border-image: none;
-            image: none;
-            width: 0px;
-        }}
-        QTreeView::branch:open:has-children:!has-siblings,
-        QTreeView::branch:open:has-children:has-siblings {{
-            border-image: none;
-            image: none;
-            width: 0px;
-        }}
-    """
+    @staticmethod
+    def get_tree_style(highlight_color, highlight_text_color):
+        """Generate theme-aware tree view stylesheet."""
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QPalette
+        
+        app = QApplication.instance()
+        if not app:
+            # Default to light theme
+            return f"""
+                QTreeView {{
+                    background-color: #fafafa;
+                    alternate-background-color: #f0f0f0;
+                    border: none;
+                    color: #000000;
+                }}
+                QTreeView::item {{
+                    padding: 0px 4px;
+                    min-height: 12px;
+                    border: none;
+                    outline: none;
+                    color: #000000;
+                }}
+                QTreeView::item:hover {{
+                    background: #dceeff;
+                    color: black;
+                    border: none;
+                    outline: none;
+                    border-radius: 0px;
+                }}
+                QTreeView::item:selected {{
+                    background: {highlight_color};
+                    color: {highlight_text_color};
+                    border: 1px solid transparent;
+                    outline: transparent;
+                    border-radius: 0px;
+                }}
+                QTreeView::item:selected:hover,
+                QTreeView::item:selected:active,
+                QTreeView::item:selected:!active,
+                QTreeView::item:selected:pressed {{
+                    background: {highlight_color};
+                    color: {highlight_text_color};
+                    border: 1px solid transparent;
+                    outline: transparent;
+                    border-radius: 0px;
+                }}
+                QTreeView::item:focus {{
+                    border: 1px solid transparent;
+                    outline: transparent;
+                }}
+                QTreeView::branch {{
+                    background: transparent;
+                    width: 0px;
+                    border: none;
+                }}
+                QTreeView::branch:has-siblings:!adjoins-item,
+                QTreeView::branch:has-siblings:adjoins-item,
+                QTreeView::branch:!has-children:!has-siblings:adjoins-item {{
+                    border-image: none;
+                    image: none;
+                    width: 0px;
+                }}
+                QTreeView::branch:has-children:!has-siblings:closed,
+                QTreeView::branch:closed:has-children:has-siblings {{
+                    border-image: none;
+                    image: none;
+                    width: 0px;
+                }}
+                QTreeView::branch:open:has-children:!has-siblings,
+                QTreeView::branch:open:has-children:has-siblings {{
+                    border-image: none;
+                    image: none;
+                    width: 0px;
+                }}
+            """
+        
+        palette = app.palette()
+        base_color = palette.color(QPalette.Base)
+        text_color = palette.color(QPalette.Text)
+        is_dark = is_dark_color(base_color)
+        
+        if is_dark:
+            hover_bg = base_color.lighter(120).name()
+        else:
+            hover_bg = "#dceeff"
+        
+        return f"""
+            QTreeView {{
+                background-color: {base_color.name()};
+                alternate-background-color: {base_color.lighter(105).name() if not is_dark else base_color.darker(105).name()};
+                border: none;
+                color: {text_color.name()};
+            }}
+            QTreeView::item {{
+                padding: 0px 4px;
+                min-height: 12px;
+                border: none;
+                outline: none;
+                color: {text_color.name()};
+            }}
+            QTreeView::item:hover {{
+                background: {hover_bg};
+                color: {text_color.name()};
+                border: none;
+                outline: none;
+                border-radius: 0px;
+            }}
+            QTreeView::item:selected {{
+                background: {highlight_color};
+                color: {highlight_text_color};
+                border: 1px solid transparent;
+                outline: transparent;
+                border-radius: 0px;
+            }}
+            QTreeView::item:selected:hover,
+            QTreeView::item:selected:active,
+            QTreeView::item:selected:!active,
+            QTreeView::item:selected:pressed {{
+                background: {highlight_color};
+                color: {highlight_text_color};
+                border: 1px solid transparent;
+                outline: transparent;
+                border-radius: 0px;
+            }}
+            QTreeView::item:focus {{
+                border: 1px solid transparent;
+                outline: transparent;
+            }}
+            QTreeView::branch {{
+                background: transparent;
+                width: 0px;
+                border: none;
+            }}
+            QTreeView::branch:has-siblings:!adjoins-item,
+            QTreeView::branch:has-siblings:adjoins-item,
+            QTreeView::branch:!has-children:!has-siblings:adjoins-item {{
+                border-image: none;
+                image: none;
+                width: 0px;
+            }}
+            QTreeView::branch:has-children:!has-siblings:closed,
+            QTreeView::branch:closed:has-children:has-siblings {{
+                border-image: none;
+                image: none;
+                width: 0px;
+            }}
+            QTreeView::branch:open:has-children:!has-siblings,
+            QTreeView::branch:open:has-children:has-siblings {{
+                border-image: none;
+                image: none;
+                width: 0px;
+            }}
+        """
 
-    BUTTON_STYLE = """
-        QPushButton {
-            background-color: #f0f0f0;
-            border: none;
-            border-radius: 6px;
-            padding: 6px;
-        }
-        QPushButton:hover { background-color: #e0e0e0; }
-        QPushButton:pressed { background-color: #d0d0d0; }
-    """
+    @staticmethod
+    def get_button_style():
+        """Generate theme-aware button stylesheet."""
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QPalette
+        
+        app = QApplication.instance()
+        if not app:
+            # Default to light theme
+            return """
+                QPushButton {
+                    background-color: #f0f0f0;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 6px;
+                }
+                QPushButton:hover { background-color: #e0e0e0; }
+                QPushButton:pressed { background-color: #d0d0d0; }
+            """
+        
+        palette = app.palette()
+        button_color = palette.color(QPalette.Button)
+        
+        return f"""
+            QPushButton {{
+                background-color: {button_color.name()};
+                border: none;
+                border-radius: 6px;
+                padding: 6px;
+            }}
+            QPushButton:hover {{ background-color: {button_color.lighter(110).name()}; }}
+            QPushButton:pressed {{ background-color: {button_color.darker(110).name()}; }}
+        """
 
-    SLIDER_STYLE = """
-        QSlider::groove:horizontal {
-            border: 1px solid #bbb;
-            height: 8px;
-            background: #e0e0e0;
-            border-radius: 4px;
-        }
-        QSlider::sub-page:horizontal {
-            background: #3399ff;
-            border: 1px solid #777;
-            height: 8px;
-            border-radius: 4px;
-        }
-        QSlider::add-page:horizontal {
-            background: #e0e0e0;
-            border: 1px solid #777;
-            height: 8px;
-            border-radius: 4px;
-        }
-        QSlider::handle:horizontal {
-            background: #ffffff;
-            border: 1px solid #777;
-            width: 16px;
-            margin: -5px 0;
-            border-radius: 8px;
-        }
-        QSlider::handle:horizontal:pressed { background: #cccccc; }
-    """
+    @staticmethod
+    def get_slider_style():
+        """Generate theme-aware slider stylesheet."""
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QPalette
+        
+        app = QApplication.instance()
+        if not app:
+            # Default to light theme
+            return """
+                QSlider::groove:horizontal {
+                    border: 1px solid #bbb;
+                    height: 8px;
+                    background: #e0e0e0;
+                    border-radius: 4px;
+                }
+                QSlider::sub-page:horizontal {
+                    background: #3399ff;
+                    border: 1px solid #777;
+                    height: 8px;
+                    border-radius: 4px;
+                }
+                QSlider::add-page:horizontal {
+                    background: #e0e0e0;
+                    border: 1px solid #777;
+                    height: 8px;
+                    border-radius: 4px;
+                }
+                QSlider::handle:horizontal {
+                    background: #ffffff;
+                    border: 1px solid #777;
+                    width: 16px;
+                    margin: -5px 0;
+                    border-radius: 8px;
+                }
+                QSlider::handle:horizontal:pressed { background: #cccccc; }
+            """
+        
+        palette = app.palette()
+        base_color = palette.color(QPalette.Base)
+        highlight_color = palette.color(QPalette.Highlight)
+        button_color = palette.color(QPalette.Button)
+        
+        return f"""
+            QSlider::groove:horizontal {{
+                border: 1px solid palette(mid);
+                height: 8px;
+                background: {base_color.darker(110).name()};
+                border-radius: 4px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {highlight_color.name()};
+                border: 1px solid palette(dark);
+                height: 8px;
+                border-radius: 4px;
+            }}
+            QSlider::add-page:horizontal {{
+                background: {base_color.darker(110).name()};
+                border: 1px solid palette(dark);
+                height: 8px;
+                border-radius: 4px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {button_color.name()};
+                border: 1px solid palette(dark);
+                width: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
+            }}
+            QSlider::handle:horizontal:pressed {{ background: {button_color.darker(110).name()}; }}
+        """
 
     @staticmethod
     def get_playlist_style():
@@ -2072,19 +2306,11 @@ class MainWindow(QMainWindow):
                     border: none;
                     outline: none;
                 }
-                QTableView::item:hover {
-                    background: rgba(220, 238, 255, 50);
-                    color: black;
-                }
                 QTableView::item:selected {
                     background: transparent;
                     color: inherit;
                     border: none;
                     outline: none;
-                }
-                QTableView::item:selected:hover {
-                    background: rgba(220, 238, 255, 50);
-                    color: black;
                 }
                 QTableView::item:focus {
                     border: none;
@@ -2116,19 +2342,11 @@ class MainWindow(QMainWindow):
                     outline: none;
                     color: palette(text);
                 }}
-                QTableView::item:hover {{
-                    background: palette(midlight);
-                    color: palette(text);
-                }}
                 QTableView::item:selected {{
                     background: transparent;
                     color: inherit;
                     border: none;
                     outline: none;
-                }}
-                QTableView::item:selected:hover {{
-                    background: palette(midlight);
-                    color: palette(text);
                 }}
                 QTableView::item:focus {{
                     border: none;
@@ -2153,19 +2371,11 @@ class MainWindow(QMainWindow):
                     border: none;
                     outline: none;
                 }
-                QTableView::item:hover {
-                    background: rgba(220, 238, 255, 50);
-                    color: black;
-                }
                 QTableView::item:selected {
                     background: transparent;
                     color: inherit;
                     border: none;
                     outline: none;
-                }
-                QTableView::item:selected:hover {
-                    background: rgba(220, 238, 255, 50);
-                    color: black;
                 }
                 QTableView::item:focus {
                     border: none;
@@ -2187,8 +2397,8 @@ class MainWindow(QMainWindow):
             "row_play_white": QIcon(get_asset_path("plplaywhite.svg")),
             "row_pause": QIcon(get_asset_path("plpause.svg")),
             "row_pause_white": QIcon(get_asset_path("plpausewhite.svg")),
-            "ctrl_play": QIcon(get_asset_path("play.svg")),
-            "ctrl_pause": QIcon(get_asset_path("pause.svg")),
+            "ctrl_play": get_themed_icon("play.svg"),
+            "ctrl_pause": get_themed_icon("pause.svg"),
         }
 
         self._setup_ui()
@@ -2263,16 +2473,14 @@ class MainWindow(QMainWindow):
 
         self.tree_delegate = DirectoryBrowserDelegate(self.tree, self.tree)
         self.tree.setItemDelegate(self.tree_delegate)
-        self.tree.setStyleSheet(self.TREE_STYLE_TEMPLATE.format(
-            color="#3399ff", text_color="white"
-        ))
+        self.tree.setStyleSheet(self.get_tree_style("#3399ff", "white"))
         self.tree.expanded.connect(self._on_tree_expanded)
 
         self.album_art = AlbumArtLabel()
         self.album_art.setStyleSheet("""
             QLabel {
-                background: #fafafa;
-                border: 1px solid #ccc;
+                background: palette(base);
+                border: 1px solid palette(mid);
             }
         """)
 
@@ -2330,13 +2538,13 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         controls.addStretch(1)
         
-        self.btn_prev = self._create_button(get_asset_path("prev.svg"), 24)
-        self.btn_playpause = self._create_button(get_asset_path("play.svg"), 24)
-        self.btn_stop = self._create_button(get_asset_path("stop.svg"), 24)
-        self.btn_next = self._create_button(get_asset_path("next.svg"), 24)
+        self.btn_prev = self._create_button(get_themed_icon("prev.svg"), 24)
+        self.btn_playpause = self._create_button(get_themed_icon("play.svg"), 24)
+        self.btn_stop = self._create_button(get_themed_icon("stop.svg"), 24)
+        self.btn_next = self._create_button(get_themed_icon("next.svg"), 24)
         
         for btn in [self.btn_prev, self.btn_playpause, self.btn_stop, self.btn_next]:
-            btn.setStyleSheet(self.BUTTON_STYLE)
+            btn.setStyleSheet(self.get_button_style())
             controls.addWidget(btn)
         
         controls.addStretch(1)
@@ -2346,7 +2554,7 @@ class MainWindow(QMainWindow):
         
         self.progress_slider = QSlider(Qt.Horizontal)
         self.progress_slider.setRange(0, 1000)
-        self.progress_slider.setStyleSheet(self.SLIDER_STYLE)
+        self.progress_slider.setStyleSheet(self.get_slider_style())
         
         self.lbl_time = QLabel("0:00 / 0:00")
         self.lbl_time.setStyleSheet("QLabel { color: #555; font-size: 12px; font-weight: 500; }")
@@ -2361,7 +2569,7 @@ class MainWindow(QMainWindow):
         self.slider_vol = QSlider(Qt.Horizontal)
         self.slider_vol.setRange(0, 100)
         self.slider_vol.setValue(70)
-        self.slider_vol.setStyleSheet(self.SLIDER_STYLE)
+        self.slider_vol.setStyleSheet(self.get_slider_style())
         
         progress_row.addWidget(self.lbl_vol)
         progress_row.addWidget(self.slider_vol)
@@ -2484,10 +2692,13 @@ class MainWindow(QMainWindow):
         event_manager.event_attach(vlc.EventType.MediaPlayerStopped, 
                                    lambda e: self.on_stopped())
 
-    def _create_button(self, icon_path, icon_size):
+    def _create_button(self, icon_or_path, icon_size):
         """Helper to create a button with an icon."""
         button = QPushButton()
-        button.setIcon(QIcon(icon_path))
+        if isinstance(icon_or_path, QIcon):
+            button.setIcon(icon_or_path)
+        else:
+            button.setIcon(QIcon(icon_or_path))
         button.setIconSize(QSize(icon_size, icon_size))
         return button
 
@@ -2562,10 +2773,7 @@ class MainWindow(QMainWindow):
         """Update tree view stylesheet with selected highlight color."""
         text_color = "white" if is_dark_color(color) else "black"
         self.tree.setStyleSheet(
-            self.TREE_STYLE_TEMPLATE.format(
-                color=color.name(), 
-                text_color=text_color
-            )
+            self.get_tree_style(color.name(), text_color)
         )
 
     def update_reset_action_state(self):
