@@ -36,6 +36,8 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QStyle, QSizePolicy,
     QAbstractItemView, QSplashScreen
 )
+# Import QtSvg to enable SVG icon support
+from PySide6 import QtSvg
 
 import vlc
 import soundfile as sf
