@@ -1137,11 +1137,15 @@ class AudioPlayerController:
         # Setup VLC environment (checks system VLC first, falls back to local plugins)
         plugins_dir = setup_vlc_environment()
         
-        # VLC options to suppress verbose warnings and handle plugin cache
+        # VLC options to suppress verbose warnings and errors
         vlc_options = [
-            '--quiet',                    # Suppress most messages
-            '--no-video-title-show',      # Don't show video title on playback
-            '--reset-plugins-cache',      # Reset plugin cache to avoid stale warnings
+            '--quiet',                      # Suppress most messages
+            '--no-video-title-show',        # Don't show video title on playback
+            '--no-stats',                   # Disable statistics
+            '--no-snapshot-preview',        # Disable snapshot preview
+            '--ignore-config',              # Don't use VLC's config file
+            '--no-plugins-cache',           # Completely disable plugin cache (prevents stale cache errors)
+            '--verbose=0',                  # Set verbosity to minimum (0 = errors and warnings off)
         ]
         
         # Create VLC instance
