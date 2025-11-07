@@ -2197,6 +2197,16 @@ class MainWindow(QMainWindow):
         
         palette = app.palette()
         button_color = palette.color(QPalette.Button)
+        base_color = palette.color(QPalette.Base)
+        is_dark = is_dark_color(base_color)
+        
+        # Create more noticeable hover effect
+        if is_dark:
+            hover_color = button_color.lighter(130)
+            pressed_color = button_color.darker(120)
+        else:
+            hover_color = button_color.darker(110)
+            pressed_color = button_color.darker(120)
         
         return f"""
             QPushButton {{
@@ -2205,8 +2215,8 @@ class MainWindow(QMainWindow):
                 border-radius: 6px;
                 padding: 6px;
             }}
-            QPushButton:hover {{ background-color: {button_color.lighter(110).name()}; }}
-            QPushButton:pressed {{ background-color: {button_color.darker(110).name()}; }}
+            QPushButton:hover {{ background-color: {hover_color.name()}; }}
+            QPushButton:pressed {{ background-color: {pressed_color.name()}; }}
         """
 
     @staticmethod
