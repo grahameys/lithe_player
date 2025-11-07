@@ -1,0 +1,40 @@
+# User-specific configuration file (contains personal settings)
+lithe_player_config.json
+
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build/Distribution
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Test/temporary files
+*.log
+*.tmp
+test_*.py
+
+# VLC fix script output (if any)
+fix_vlc_cache.bat.log
