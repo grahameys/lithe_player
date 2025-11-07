@@ -1865,22 +1865,27 @@ class MainWindow(QMainWindow):
         }}
         QTreeView::branch {{
             background: transparent;
+            width: 0px;
+            border: none;
         }}
         QTreeView::branch:has-siblings:!adjoins-item,
         QTreeView::branch:has-siblings:adjoins-item,
         QTreeView::branch:!has-children:!has-siblings:adjoins-item {{
             border-image: none;
             image: none;
+            width: 0px;
         }}
         QTreeView::branch:has-children:!has-siblings:closed,
         QTreeView::branch:closed:has-children:has-siblings {{
             border-image: none;
-            image: url(assets/branch-closed.png);
+            image: none;
+            width: 0px;
         }}
         QTreeView::branch:open:has-children:!has-siblings,
         QTreeView::branch:open:has-children:has-siblings {{
             border-image: none;
-            image: url(assets/branch-open.png);
+            image: none;
+            width: 0px;
         }}
     """
 
@@ -2037,6 +2042,9 @@ class MainWindow(QMainWindow):
         self.tree.setAlternatingRowColors(True)
         self.tree.sortByColumn(0, Qt.AscendingOrder)
         self.tree.header().hide()
+        
+        # Remove indentation to eliminate space beside folder names
+        self.tree.setIndentation(0)
 
         for col in range(1, self.fs_model.columnCount()):
             self.tree.hideColumn(col)
