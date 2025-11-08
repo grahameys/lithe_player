@@ -1602,17 +1602,27 @@ class PlaylistView(QTableView):
                 if modifiers & (Qt.ControlModifier | Qt.ShiftModifier):
                     # Let default handler manage Ctrl/Shift selection
                     super().mousePressEvent(event)
+                    return
                 else:
-                    # Start drag selection
-                    self._drag_selecting = True
-                    self._drag_start_row = index.row()
-                    self.clearSelection()
-                    self.selectRow(index.row())
+                    row = index.row()
+                    # Check if this row is already selected - toggle if so
+                    if self.selectionModel().isRowSelected(row, QModelIndex()):
+                        # Row is selected - deselect it (don't call super to avoid re-selection)
+                        self.clearSelection()
+                        return
+                    else:
+                        # Row is not selected - select it
+                        self._drag_selecting = True
+                        self._drag_start_row = row
+                        self.clearSelection()
+                        self.selectRow(row)
+                        # Fall through to call super() for double-click detection
             else:
                 # Clicked on empty area - clear selection
                 self.clearSelection()
+                return
         
-        # Always call parent to let Qt track double-clicks properly
+        # Call parent to let Qt track double-clicks properly
         super().mousePressEvent(event)
     
     def mouseReleaseEvent(self, event):
