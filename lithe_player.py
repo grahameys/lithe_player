@@ -1280,6 +1280,114 @@ class PlaylistModel(QAbstractTableModel):
             top_left = self.index(0, 0)
             bottom_right = self.index(self.rowCount() - 1, self.columnCount() - 1)
             self.dataChanged.emit(top_left, bottom_right)
+    
+    def supportedDropActions(self):
+        """Return supported drop actions for drag and drop."""
+        return Qt.MoveAction | Qt.CopyAction
+    
+    def flags(self, index):
+        """Return item flags - enable drag and drop."""
+        default_flags = super().flags(index)
+        if index.isValid():
+            return default_flags | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled
+        return default_flags | Qt.ItemIsDropEnabled
+    
+    def mimeTypes(self):
+        """Return supported MIME types for drag and drop."""
+        return ['application/x-playlist-track-index', 'text/uri-list']
+    
+    def mimeData(self, indexes):
+        """Create MIME data for dragged items."""
+        from PySide6.QtCore import QMimeData
+        mime_data = QMimeData()
+        
+        # Get unique rows from indexes
+        rows = sorted(set(index.row() for index in indexes if index.isValid()))
+        
+        if rows:
+            # Store the row index for internal moves
+            mime_data.setData('application/x-playlist-track-index', str(rows[0]).encode())
+        
+        return mime_data
+    
+    def canDropMimeData(self, data, action, row, column, parent):
+        """Check if drop is allowed."""
+        # Allow drops of internal playlist items or external files
+        if data.hasFormat('application/x-playlist-track-index'):
+            return True
+        if data.hasUrls():
+            return True
+        return False
+    
+    def dropMimeData(self, data, action, row, column, parent):
+        """Handle dropped data - reorder tracks or add new ones."""
+        # Handle internal playlist reordering
+        if data.hasFormat('application/x-playlist-track-index'):
+            source_row = int(data.data('application/x-playlist-track-index').data().decode())
+            
+            # Determine target row
+            if row == -1:
+                if parent.isValid():
+                    target_row = parent.row()
+                else:
+                    target_row = self.rowCount()
+            else:
+                target_row = row
+            
+            # Can't drop on itself
+            if source_row == target_row or source_row == target_row - 1:
+                return False
+            
+            # Move the track
+            self.moveRow(QModelIndex(), source_row, QModelIndex(), target_row)
+            return True
+        
+        # Handle external file drops (let the view handle this via dropEvent)
+        return False
+    
+    def moveRow(self, sourceParent, sourceRow, destinationParent, destinationRow):
+        """Move a row from source to destination."""
+        if sourceRow < 0 or sourceRow >= len(self._tracks):
+            return False
+        
+        # Adjust destination if moving down
+        if destinationRow > sourceRow:
+            actual_dest = destinationRow - 1
+        else:
+            actual_dest = destinationRow
+        
+        # Check bounds
+        if actual_dest < 0 or actual_dest > len(self._tracks):
+            return False
+        
+        # Perform the move
+        self.beginMoveRows(sourceParent, sourceRow, sourceRow, destinationParent, destinationRow)
+        
+        # Extract track
+        track = self._tracks.pop(sourceRow)
+        
+        # Insert at new position
+        self._tracks.insert(actual_dest, track)
+        
+        # Update current_index if needed
+        if self.current_index == sourceRow:
+            # The currently playing track was moved
+            self.current_index = actual_dest
+        elif sourceRow < self.current_index <= actual_dest:
+            # Current track shifted up
+            self.current_index -= 1
+        elif actual_dest <= self.current_index < sourceRow:
+            # Current track shifted down
+            self.current_index += 1
+        
+        self.endMoveRows()
+        
+        # CRITICAL: Refresh the preloaded next track after reordering
+        # The controller needs to update what's preloaded since the order changed
+        if self.controller:
+            self.controller.refresh_preload()
+        
+        return True
 
 # ============================================================================
 # AUDIO PLAYER CONTROLLER
@@ -1479,6 +1587,29 @@ class AudioPlayerController:
                 print(f"    next_track_path is now: {self.gapless_manager.next_track_path}")
                 print(f"    Standby player media cleared")
 
+    def refresh_preload(self):
+        """Refresh the preloaded next track after playlist reordering."""
+        print("!!! Playlist reordered - refreshing preload !!!")
+        
+        # Only refresh if we're currently playing something
+        if self.current_index < 0 or not self.model:
+            print("    No active playback, skipping refresh")
+            return
+        
+        # Clear the old preload first
+        with self.gapless_manager.preload_lock:
+            old_preload = self.gapless_manager.next_track_path
+            self.gapless_manager.next_track_path = None
+            
+            # Stop and clear the standby player
+            if self.gapless_manager.standby_player:
+                self.gapless_manager.standby_player.stop()
+                self.gapless_manager.standby_player.set_media(None)
+                print(f"    Cleared old preload: {os.path.basename(old_preload) if old_preload else 'None'}")
+        
+        # Preload the new next track based on current order
+        self._preload_next()
+
     def pause(self):
         """Pause playback."""
         self.gapless_manager.pause()
@@ -1669,8 +1800,252 @@ class AlbumArtLabel(QLabel):
             )
             super().setPixmap(scaled)
 
+class DirectoryTreeView(QTreeView):
+    """QTreeView with drag support for files and folders and context menu."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragOnly)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)  # Enable multi-selection
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+        self.playlist_model = None  # Will be set by MainWindow
+    
+    def _show_context_menu(self, position):
+        """Show context menu for file/folder operations."""
+        index = self.indexAt(position)
+        if not index.isValid():
+            return
+        
+        model = self.model()
+        
+        # Get all selected items (support multi-selection)
+        selected_indexes = self.selectedIndexes()
+        if not selected_indexes:
+            return
+        
+        # Determine if selection contains files, folders, or both
+        has_files = False
+        has_folders = False
+        
+        for idx in selected_indexes:
+            if model.isDir(idx):
+                has_folders = True
+            else:
+                ext = os.path.splitext(model.filePath(idx))[1].lower()
+                if ext in SUPPORTED_EXTENSIONS:
+                    has_files = True
+        
+        # Only show menu if we have valid audio files or folders
+        if not (has_files or has_folders):
+            return
+        
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        
+        # Add context menu actions
+        play_next_action = menu.addAction("Play Next")
+        add_to_playlist_action = menu.addAction("Add to Playlist")
+        menu.addSeparator()
+        overwrite_playlist_action = menu.addAction("Add and Overwrite Playlist")
+        
+        action = menu.exec(self.viewport().mapToGlobal(position))
+        
+        if action == play_next_action:
+            self._add_selected_play_next()
+        elif action == add_to_playlist_action:
+            self._add_selected_to_playlist()
+        elif action == overwrite_playlist_action:
+            self._overwrite_playlist_with_selected()
+    
+    def _add_file_play_next(self, file_path):
+        """Add a single file to play next in the playlist."""
+        if self.playlist_model:
+            # Get controller from playlist model
+            controller = self.playlist_model.controller
+            if controller and controller.model:
+                # Insert after current playing track
+                insert_pos = controller.current_index + 1 if controller.current_index >= 0 else 0
+                self._insert_files_at_position([file_path], insert_pos)
+    
+    def _add_selected_play_next(self):
+        """Add all selected items to play next in the playlist."""
+        paths = self._get_paths_from_selection()
+        if paths and self.playlist_model:
+            controller = self.playlist_model.controller
+            if controller and controller.model:
+                insert_pos = controller.current_index + 1 if controller.current_index >= 0 else 0
+                self._insert_files_at_position(paths, insert_pos)
+    
+    def _add_selected_to_playlist(self):
+        """Add all selected items to the end of the playlist."""
+        paths = self._get_paths_from_selection()
+        if paths and self.playlist_model:
+            self.playlist_model.add_tracks(paths, clear=False)
+    
+    def _overwrite_playlist_with_selected(self):
+        """Replace playlist with selected items and start playback."""
+        paths = self._get_paths_from_selection()
+        if paths and self.playlist_model:
+            controller = self.playlist_model.controller
+            
+            # Stop current playback
+            if controller:
+                controller.stop()
+            
+            # Clear and add tracks
+            self.playlist_model.add_tracks(paths, clear=True)
+            
+            # Start playing first track with a slight delay to ensure stop is processed
+            if controller and len(paths) > 0:
+                # Use QTimer to defer playback start, ensuring stop signal is fully processed
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(50, lambda: self._start_playback_after_overwrite(controller))
+                print(f"Replaced playlist with {len(paths)} track(s), starting playback...")
+    
+    def _start_playback_after_overwrite(self, controller):
+        """Start playback after playlist overwrite (called via QTimer)."""
+        if controller and controller.model and controller.model.rowCount() > 0:
+            controller.play_index(0)
+            print("Playback started after overwrite")
+    
+    def _get_paths_from_selection(self):
+        """Get all audio file paths from selected items (files and folders)."""
+        model = self.model()
+        selected_indexes = self.selectedIndexes()
+        
+        paths = []
+        processed_paths = set()  # Avoid duplicates
+        
+        for index in selected_indexes:
+            if not index.isValid():
+                continue
+            
+            file_path = model.filePath(index)
+            
+            # Skip if already processed (for multi-column selection)
+            if file_path in processed_paths:
+                continue
+            processed_paths.add(file_path)
+            
+            if model.isDir(index):
+                # It's a folder - get all audio files recursively
+                folder_paths = self._get_audio_files_from_folder(file_path)
+                paths.extend(folder_paths)
+            else:
+                # It's a file - check if it's an audio file
+                ext = os.path.splitext(file_path)[1].lower()
+                if ext in SUPPORTED_EXTENSIONS:
+                    paths.append(file_path)
+        
+        return paths
+    
+    def _get_audio_files_from_folder(self, folder_path):
+        """Recursively get all audio files from a folder."""
+        paths = []
+        for root, dirs, files in os.walk(folder_path):
+            for file in sorted(files):
+                file_path = os.path.join(root, file)
+                if os.path.splitext(file_path)[1].lower() in SUPPORTED_EXTENSIONS:
+                    paths.append(file_path)
+        return paths
+    
+    def _insert_files_at_position(self, paths, position):
+        """Insert files at a specific position in the playlist."""
+        if not self.playlist_model or not paths:
+            return
+        
+        # Extract metadata for all files
+        new_items = [
+            extract_metadata(path, i)
+            for i, path in enumerate(paths, start=1)
+            if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS
+        ]
+        
+        if not new_items:
+            return
+        
+        # Ensure position is valid
+        position = max(0, min(position, self.playlist_model.rowCount()))
+        
+        # Insert tracks
+        self.playlist_model.beginInsertRows(QModelIndex(), position, position + len(new_items) - 1)
+        for i, item in enumerate(new_items):
+            self.playlist_model._tracks.insert(position + i, item)
+        self.playlist_model.endInsertRows()
+        
+        # Update current_index if needed
+        if self.playlist_model.current_index >= position:
+            self.playlist_model.current_index += len(new_items)
+        
+        # Refresh preload if currently playing
+        if self.playlist_model.controller:
+            self.playlist_model.controller.refresh_preload()
+        
+        print(f"Inserted {len(new_items)} track(s) at position {position}")
+    
+    def mousePressEvent(self, event):
+        """Handle mouse press for drag initiation."""
+        if event.button() == Qt.LeftButton:
+            self.drag_start_position = event.position().toPoint()
+        super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        """Handle mouse move for drag and drop."""
+        if not (event.buttons() & Qt.LeftButton):
+            super().mouseMoveEvent(event)
+            return
+        
+        if not hasattr(self, 'drag_start_position'):
+            super().mouseMoveEvent(event)
+            return
+        
+        from PySide6.QtCore import QMimeData, QUrl
+        from PySide6.QtGui import QDrag
+        
+        # Check if we've moved far enough to start a drag
+        if (event.position().toPoint() - self.drag_start_position).manhattanLength() < QApplication.startDragDistance():
+            super().mouseMoveEvent(event)
+            return
+        
+        # Get all selected indexes
+        selected_indexes = self.selectedIndexes()
+        if not selected_indexes:
+            super().mouseMoveEvent(event)
+            return
+        
+        model = self.model()
+        
+        # Collect all file paths from selected items, maintaining selection order
+        urls = []
+        for index in selected_indexes:
+            if index.isValid():
+                file_path = model.filePath(index)
+                # Only add files (not directories) or handle directories separately
+                if os.path.isfile(file_path):
+                    urls.append(QUrl.fromLocalFile(file_path))
+                elif os.path.isdir(file_path):
+                    # For directories, add the directory itself
+                    urls.append(QUrl.fromLocalFile(file_path))
+        
+        if not urls:
+            super().mouseMoveEvent(event)
+            return
+        
+        # Create drag object
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        
+        # Add all selected file URLs to mime data
+        mime_data.setUrls(urls)
+        drag.setMimeData(mime_data)
+        
+        # Execute drag
+        drag.exec(Qt.CopyAction)
+
 class PlaylistView(QTableView):
-    """QTableView with watermark and row-wide hover support."""
+    """QTableView with watermark, row-wide hover support, drag-and-drop, and context menu."""
 
     def __init__(self, logo_path=None, parent=None):
         super().__init__(parent)
@@ -1678,14 +2053,129 @@ class PlaylistView(QTableView):
             logo_path = get_asset_path("logo.png")
         self.logo = QPixmap(logo_path)
         self.setMouseTracking(True)
+        
+        # Enable drag and drop - both internal reordering and external drops
+        self.setAcceptDrops(True)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDrop)
+        self.setDefaultDropAction(Qt.MoveAction)
+        self.setDragDropOverwriteMode(False)
+        
+        # Enable multi-selection with standard OS behavior
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        
+        # Enable context menu
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+        
+        # Track for drag selection
+        self._drag_selecting = False
+        self._drag_start_row = -1
+    
+    def _show_context_menu(self, position):
+        """Show context menu for playlist operations."""
+        # Get selected rows
+        selected_rows = sorted(set(index.row() for index in self.selectedIndexes()))
+        
+        if not selected_rows:
+            return
+        
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        
+        # Add remove action
+        if len(selected_rows) == 1:
+            remove_action = menu.addAction("Remove from Playlist")
+        else:
+            remove_action = menu.addAction(f"Remove {len(selected_rows)} Tracks from Playlist")
+        
+        action = menu.exec(self.viewport().mapToGlobal(position))
+        
+        if action == remove_action:
+            self._remove_selected_tracks(selected_rows)
+    
+    def _remove_selected_tracks(self, rows):
+        """Remove selected tracks from the playlist."""
+        model = self.model()
+        if not model or not rows:
+            return
+        
+        # Remove in reverse order to maintain indices
+        for row in reversed(rows):
+            if 0 <= row < model.rowCount():
+                model.beginRemoveRows(QModelIndex(), row, row)
+                model._tracks.pop(row)
+                
+                # Update current_index if needed
+                if model.current_index == row:
+                    # Removed the currently playing track - stop playback
+                    if model.controller:
+                        model.controller.stop()
+                    model.current_index = -1
+                elif model.current_index > row:
+                    # Playing track shifted down
+                    model.current_index -= 1
+                
+                model.endRemoveRows()
+        
+        # Refresh preload after removal
+        if model.controller:
+            model.controller.refresh_preload()
+        
+        print(f"Removed {len(rows)} track(s) from playlist")
+
+    def mousePressEvent(self, event):
+        """Handle mouse press for drag selection."""
+        if event.button() == Qt.LeftButton:
+            index = self.indexAt(event.position().toPoint())
+            if index.isValid():
+                # Check if Ctrl or Shift is held (standard multi-select)
+                modifiers = event.modifiers()
+                if modifiers & (Qt.ControlModifier | Qt.ShiftModifier):
+                    # Let default handler manage Ctrl/Shift selection
+                    super().mousePressEvent(event)
+                else:
+                    # Start drag selection
+                    self._drag_selecting = True
+                    self._drag_start_row = index.row()
+                    # Clear current selection and select this row
+                    self.clearSelection()
+                    self.selectRow(index.row())
+            else:
+                # Clicked on empty area - clear selection
+                self.clearSelection()
+                super().mousePressEvent(event)
+        else:
+            super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        """Handle mouse move events for hover tracking."""
+        """Handle mouse move events for hover tracking and drag selection."""
         index = self.indexAt(event.position().toPoint())
+        
+        # Update hover for delegate
         delegate = self.itemDelegate()
         if hasattr(delegate, "set_hover_row"):
             delegate.set_hover_row(index.row() if index.isValid() else -1)
+        
+        # Handle drag selection
+        if self._drag_selecting and index.isValid():
+            current_row = index.row()
+            if current_row != self._drag_start_row:
+                # Select range from start to current
+                self.clearSelection()
+                start = min(self._drag_start_row, current_row)
+                end = max(self._drag_start_row, current_row)
+                for row in range(start, end + 1):
+                    self.selectRow(row)
+        
         super().mouseMoveEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        """Handle mouse release to end drag selection."""
+        if event.button() == Qt.LeftButton:
+            self._drag_selecting = False
+            self._drag_start_row = -1
+        super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event):
         """Handle mouse leave events."""
@@ -1693,16 +2183,62 @@ class PlaylistView(QTableView):
         if hasattr(delegate, "set_hover_row"):
             delegate.set_hover_row(-1)
         super().leaveEvent(event)
+    
+    def dragEnterEvent(self, event):
+        """Handle drag enter events."""
+        # Accept both internal drags and external file drops
+        if event.mimeData().hasFormat('application/x-playlist-track-index') or event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def dragMoveEvent(self, event):
+        """Handle drag move events."""
+        # Accept both internal drags and external file drops
+        if event.mimeData().hasFormat('application/x-playlist-track-index') or event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def dropEvent(self, event):
+        """Handle drop events - reorder tracks or add files/folders to playlist."""
+        mime_data = event.mimeData()
         
-    def mousePressEvent(self, event):
-        """Handle mouse press events for toggle selection."""
-        if event.button() == Qt.LeftButton:
-            index = self.indexAt(event.position().toPoint())
-            if index.isValid():
-                if self.selectionModel().isSelected(index):
-                    self.clearSelection()
-                    return
-        super().mousePressEvent(event)        
+        # Check if this is an internal reorder (model handles this)
+        if mime_data.hasFormat('application/x-playlist-track-index'):
+            # Let the default handler process internal moves
+            super().dropEvent(event)
+            return
+        
+        # Handle external file drops
+        if not mime_data.hasUrls():
+            event.ignore()
+            return
+        
+        # Collect all audio file paths from dropped items
+        paths = []
+        for url in mime_data.urls():
+            path = url.toLocalFile()
+            if os.path.isfile(path):
+                # Single file - check if it's an audio file
+                if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
+                    paths.append(path)
+            elif os.path.isdir(path):
+                # Directory - recursively find all audio files
+                for root, dirs, files in os.walk(path):
+                    for file in sorted(files):
+                        file_path = os.path.join(root, file)
+                        if os.path.splitext(file_path)[1].lower() in SUPPORTED_EXTENSIONS:
+                            paths.append(file_path)
+        
+        # Add tracks to playlist (append mode - clear=False)
+        if paths:
+            model = self.model()
+            if model:
+                model.add_tracks(paths, clear=False)
+                print(f"Added {len(paths)} track(s) to playlist")
+        
+        event.acceptProposedAction()
         
     def viewportEvent(self, event):
         """Handle viewport events for watermark drawing."""
@@ -2499,7 +3035,7 @@ class MainWindow(QMainWindow):
         self.fs_model = QFileSystemModel()
         self.fs_model.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
 
-        self.tree = QTreeView()
+        self.tree = DirectoryTreeView()
         self.tree.setModel(self.fs_model)
         self.tree.setSortingEnabled(True)
         self.tree.setAlternatingRowColors(True)
@@ -2551,7 +3087,7 @@ class MainWindow(QMainWindow):
         self.playlist = PlaylistView(get_asset_path("logo.png"))
         self.playlist.setModel(self.playlist_model)
         self.playlist.setSelectionBehavior(QTableView.SelectRows)
-        self.playlist.setSelectionMode(QTableView.SingleSelection)
+        # SelectionMode is now set in PlaylistView.__init__ to ExtendedSelection
         self.playlist.setAlternatingRowColors(True)
         self.playlist.setIconSize(QSize(16, 16))
         self.playlist.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -2573,6 +3109,9 @@ class MainWindow(QMainWindow):
         self.controller = AudioPlayerController(self.playlist)
         self.controller.set_model(self.playlist_model)
         self.playlist_model.controller = self.controller
+        
+        # Connect tree view to playlist model for context menu operations
+        self.tree.playlist_model = self.playlist_model
 
     def _setup_bottom_controls(self, parent_layout):
         """Setup playback controls, progress bar, volume, and equalizer."""
@@ -2917,13 +3456,23 @@ class MainWindow(QMainWindow):
                 self.playlist_model.add_tracks([path])
                 row = self.playlist_model.rowCount() - 1
                 self.controller.play_index(row)
+                self.update_playback_ui()
         elif os.path.isdir(path):
-            files = self._get_audio_files_from_directory(path)
-            if files:
-                self.playlist_model.add_tracks(files, clear=True)
-                self.controller.play_index(0)
-        
-        self.update_playback_ui()
+            # Only auto-play folders if playlist is empty
+            playlist_is_empty = self.playlist_model.rowCount() == 0
+            
+            if playlist_is_empty:
+                # Playlist is empty - check if folder has audio and auto-play
+                files = self._get_audio_files_from_directory(path)
+                if files:
+                    # Folder has audio files - add and start playing (don't expand)
+                    self.playlist_model.add_tracks(files, clear=True)
+                    self.controller.play_index(0)
+                    self.update_playback_ui()
+                    return
+            
+            # Playlist has tracks OR folder has no audio - let Qt handle expansion normally
+            # Don't do anything, Qt will handle the expand/collapse automatically
 
     def on_tree_expanded(self, index):
         """Handle tree expansion - collapse siblings."""
