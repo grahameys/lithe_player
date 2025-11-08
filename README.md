@@ -22,16 +22,21 @@
 - **Gapless Playback** - Seamless transitions between tracks using dual-player architecture
 - **Multi-format Support** - MP3, FLAC, WAV, M4A, AAC, and OGG
 - **VLC Backend** - Reliable, high-quality audio engine
-- **Playlist Management** - Queue and organize your music
+- **Smart Playlist Management** - Advanced queue control with drag-and-drop reordering
 
 ### 🎨 Visual Experience
 - **Real-time FFT Equalizer** - Beautiful frequency spectrum visualization with gravity physics
 - **Album Art Display** - Automatic extraction and display of embedded artwork
+- **Adaptive Theming** - Full dark/light theme support matching your system preferences
 - **Customizable Accent Colors** - Personalize the interface to match your style
 - **Peak Hold Indicators** - Dynamic peak visualization with customizable colors and transparency
 - **Smooth Animations** - Fluid, responsive equalizer with intelligent scaling
 
 ### 🎹 Control & Navigation
+- **Drag & Drop Support** - Effortlessly add files and folders from anywhere
+- **Multi-Selection** - Select multiple tracks with Ctrl/Shift/Click-drag
+- **Context Menus** - Right-click for quick actions (Play Next, Add to Playlist, Remove, etc.)
+- **Smart Folder Loading** - Context-aware playlist behavior (add vs. overwrite)
 - **File Browser** - Intuitive directory navigation with album art preview
 - **Global Media Keys** - Windows media key support (Play/Pause, Stop, Next, Previous)
 - **Keyboard Shortcuts** - Spacebar, arrow keys, and standard media controls
@@ -298,9 +303,16 @@ python lithe_player.py
 ### Quick Start Guide
 
 1. **Browse Files** - Use the left panel to navigate your music folders
-2. **Add Music** - Double-click a folder to load all audio files to the playlist
-3. **Play** - Double-click a track in the playlist or use the play button
-4. **Customize** - Go to View → Set accent colour to personalize the interface
+2. **Add Music** - Right-click or drag files/folders to the playlist
+3. **Multi-Select** - Use Ctrl+Click, Shift+Click, or click-drag to select multiple items
+4. **Reorder Tracks** - Drag and drop tracks within the playlist to rearrange
+5. **Context Menus** - Right-click on files or playlist items for quick actions:
+   - **Play Next** - Insert after currently playing track
+   - **Add to Playlist** - Append to end of playlist
+   - **Add and Overwrite Playlist** - Replace entire playlist and start playing
+   - **Remove from Playlist** - Delete selected tracks
+6. **Play** - Double-click a track in the playlist or use the play button
+7. **Customize** - Go to View → Set accent colour to personalize the interface
 
 ### Keyboard Shortcuts
 
@@ -318,6 +330,44 @@ python lithe_player.py
 
 ## 🎛️ Features in Detail
 
+### Drag & Drop Functionality
+
+Lithe Player provides comprehensive drag-and-drop support for effortless music management:
+
+- **From File Browser to Playlist** - Select single or multiple files/folders and drag to add
+- **From External Sources** - Drag files from Windows Explorer, macOS Finder, or Linux file managers
+- **Internal Playlist Reordering** - Click and drag tracks to rearrange playback order
+- **Multi-Selection Support** - Drag multiple selected items at once
+
+### Multi-Selection Methods
+
+Select multiple tracks using standard OS conventions:
+
+- **Ctrl+Click** - Add/remove individual items to selection
+- **Shift+Click** - Select range from last clicked item to current
+- **Click-Drag** - Click and drag in playlist to select consecutive tracks
+- **Works Everywhere** - Available in both file browser and playlist
+
+### Context Menu Actions
+
+Right-click for quick access to common operations:
+
+#### File Browser Context Menu
+- **Play Next** - Insert selected files/folders after currently playing track
+- **Add to Playlist** - Append selected items to end of playlist
+- **Add and Overwrite Playlist** - Replace entire playlist with selection and start playing immediately
+
+#### Playlist Context Menu
+- **Remove from Playlist** - Delete selected tracks (supports multi-selection)
+
+### Smart Folder Behavior
+
+Double-clicking folders intelligently adapts to playlist state:
+
+- **Empty Playlist** - Loads all audio files from folder and starts playing
+- **Existing Playlist** - Simply expands the folder for browsing without overwriting
+- **Preserves Your Work** - Never accidentally replaces a carefully curated playlist
+
 ### Gapless Playback System
 
 Lithe Player uses a sophisticated dual-player architecture for true gapless playback:
@@ -326,16 +376,25 @@ Lithe Player uses a sophisticated dual-player architecture for true gapless play
 - **Smart Preloading** - Next track loads in the background during playback
 - **Seamless Transitions** - Automatic switching at precise timing (500ms before end)
 - **Format Agnostic** - Works across all supported audio formats
+- **Auto-Refresh** - Preload automatically updates when playlist is reordered
 
 ### FFT Equalizer
 
 The real-time equalizer provides professional-grade visualization:
 
-- **70 Frequency Bands** - Detailed spectrum analysis from 60Hz to 17kHz
+- **40 Frequency Bands** - Detailed spectrum analysis from 60Hz to 17kHz
 - **Physics-based Animation** - Gravity effects and smooth interpolation
 - **Peak Hold Indicators** - Visual markers for maximum levels
 - **Customizable Colors** - Automatic complementary colors or manual selection
 - **Adjustable Transparency** - Fine-tune peak indicator visibility
+
+### Theme Compatibility
+
+Seamless integration with your operating system:
+
+- **Adaptive Icons** - Automatically switches between light/dark icon sets
+- **System Theme Detection** - Matches Windows light/dark mode preferences
+- **Consistent Experience** - Works perfectly with both Windows 10 and 11 themes
 
 ### Customization Options
 
@@ -516,13 +575,17 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🗺️ Roadmap
 
+- [x] Drag and drop support (files, folders, internal reordering)
+- [x] Multi-selection with Ctrl/Shift/Click-drag
+- [x] Context menus for quick actions
+- [x] Dark/light theme compatibility
+- [x] Smart folder double-click behavior
 - [ ] Cross-platform global media key support (macOS, Linux)
 - [ ] Playlist save/load functionality
 - [ ] Shuffle and repeat modes
 - [ ] Search and filter in playlist
 - [ ] Mini player mode
 - [ ] Audio effects and equalizer presets
-- [ ] Dark mode theme
 - [ ] Lyrics display
 - [ ] Last.fm scrobbling
 - [ ] Plugin system
