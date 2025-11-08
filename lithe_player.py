@@ -1,12 +1,12 @@
 """
 Lithe Player - A modern audio player with FFT equalizer visualization.
 
-This application provides:
-- Audio playback using VLC backend
-- Visual FFT-based equalizer
-- Playlist management
+Features:
+- Gapless audio playback using dual VLC players
+- Visual FFT-based equalizer with customizable colors
+- Playlist management with drag-and-drop
 - File browser with album art display
-- Customizable accent colors
+- Customizable accent colors and fonts
 - Global media key support (Windows)
 
 Author: grahameys
@@ -14,31 +14,16 @@ Author: grahameys
 
 import sys
 import os
-import numpy as np
+import json
+import base64
 import threading
 import time
 import ctypes
-from collections import deque
-import threading
 from enum import Enum
+from pathlib import Path
+from collections import deque
 
-from PySide6.QtCore import (
-    Qt, QDir, QAbstractTableModel, QModelIndex, QSettings, QSize, QTimer, 
-    QRect, QEvent, QAbstractNativeEventFilter, QObject, Signal, QThread
-)
-from PySide6.QtGui import (
-    QAction, QFont, QColor, QIcon, QPalette, QPixmap, QPainter, QKeySequence, QShortcut
-)
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QSplitter, QTreeView, QTableView,
-    QVBoxLayout, QHBoxLayout, QPushButton, QFileSystemModel, QHeaderView,
-    QLabel, QSlider, QFileDialog, QMessageBox, QColorDialog,
-    QStyledItemDelegate, QStyleOptionViewItem, QStyle, QSizePolicy,
-    QAbstractItemView, QSplashScreen
-)
-# Import QtSvg to enable SVG icon support
-from PySide6 import QtSvg
-
+import numpy as np
 import vlc
 import soundfile as sf
 from mutagen import File as MutagenFile
@@ -47,38 +32,67 @@ from mutagen.id3 import ID3, APIC
 from mutagen.flac import FLAC
 from mutagen.mp4 import MP4
 
+from PySide6.QtCore import (
+    Qt, QDir, QAbstractTableModel, QModelIndex, QSize, QTimer, 
+    QRect, QEvent, QAbstractNativeEventFilter, QObject, Signal, QThread,
+    QByteArray, QUrl, QMimeData, QRectF
+)
+from PySide6.QtGui import (
+    QAction, QFont, QColor, QIcon, QPalette, QPixmap, QPainter, 
+    QKeySequence, QShortcut, QImage, QRegion, QPainterPath, QDrag
+)
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QSplitter, QTreeView, QTableView,
+    QVBoxLayout, QHBoxLayout, QPushButton, QFileSystemModel, QHeaderView,
+    QLabel, QSlider, QFileDialog, QMessageBox, QColorDialog,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle, QSizePolicy,
+    QAbstractItemView, QSplashScreen, QMenu, QFontComboBox
+)
+from PySide6 import QtSvg
+from PySide6.QtSvg import QSvgRenderer
+
+if sys.platform == 'win32':
+    from ctypes import wintypes
+    import ctypes.wintypes
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+SUPPORTED_EXTENSIONS = {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg'}
+DEFAULT_ANALYSIS_RATE = 44100
+ANALYSIS_CHUNK_SAMPLES = 2048
+PROGRESS_UPDATE_INTERVAL_MS = 500
+EQUALIZER_UPDATE_INTERVAL_MS = 30
+SPLASH_SCREEN_DURATION_MS = 3000
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
 def get_asset_path(filename):
-    """Get absolute path to asset file, works for dev and PyInstaller."""
+    """Get absolute path to asset file (works for dev and PyInstaller)."""
     if getattr(sys, 'frozen', False):
-        # Running in PyInstaller bundle
         base_path = sys._MEIPASS
     else:
-        # Running in normal Python environment
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, 'assets', filename)
 
+def is_dark_color(color: QColor) -> bool:
+    """Determine if a color is dark based on perceived brightness."""
+    brightness = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+    return brightness < 128
+
 def get_themed_icon(filename):
     """Get theme-aware icon by modifying SVG colors based on system theme."""
-    from PySide6.QtWidgets import QApplication
-    from PySide6.QtGui import QIcon, QPixmap, QPalette, QColor, QImage
-    from PySide6.QtSvg import QSvgRenderer
-    from PySide6.QtCore import QByteArray, Qt
-    
     svg_path = get_asset_path(filename)
     
-    # Read SVG file
     try:
         with open(svg_path, 'r', encoding='utf-8') as f:
             svg_content = f.read()
     except:
-        # If we can't read it, return regular icon
         return QIcon(svg_path)
     
-    # Check if we need light or dark icon
     app = QApplication.instance()
     use_light_icon = False
     if app:
@@ -86,9 +100,7 @@ def get_themed_icon(filename):
         base_color = palette.color(QPalette.Base)
         use_light_icon = is_dark_color(base_color)
     
-    # Replace dark colors with light colors for dark theme
     if use_light_icon:
-        # Replace common dark colors with white/light colors
         svg_content = svg_content.replace('stroke="#1C274C"', 'stroke="#FFFFFF"')
         svg_content = svg_content.replace('fill="#1C274C"', 'fill="#FFFFFF"')
         svg_content = svg_content.replace('stroke="#000000"', 'stroke="#FFFFFF"')
@@ -96,663 +108,16 @@ def get_themed_icon(filename):
         svg_content = svg_content.replace('stroke="#000"', 'stroke="#FFF"')
         svg_content = svg_content.replace('fill="#000"', 'fill="#FFF"')
     
-    # Create icon from modified SVG with proper alpha channel support
     renderer = QSvgRenderer(QByteArray(svg_content.encode('utf-8')))
-    
-    # Use QImage with alpha channel for proper transparency
     image = QImage(48, 48, QImage.Format_ARGB32)
     image.fill(Qt.transparent)
     
-    from PySide6.QtGui import QPainter
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing)
     renderer.render(painter)
     painter.end()
     
-    pixmap = QPixmap.fromImage(image)
-    return QIcon(pixmap)
-
-# ============================================================================
-# JSON SETTINGS MANAGER
-# ============================================================================
-
-import json
-from pathlib import Path
-import base64
-
-class JsonSettings:
-    """Cross-platform JSON-based settings manager compatible with QSettings API."""
-    
-    def __init__(self, config_name="config.json"):
-        """Initialize settings with JSON file in the same directory as the script."""
-        self.config_path = Path(__file__).parent / config_name
-        self._settings = {}
-        self._load()
-    
-    def _load(self):
-        """Load settings from JSON file."""
-        if self.config_path.exists():
-            try:
-                with open(self.config_path, 'r', encoding='utf-8') as f:
-                    self._settings = json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                print(f"Warning: Could not load settings from {self.config_path}: {e}")
-                self._settings = {}
-    
-    def _save(self):
-        """Save settings to JSON file."""
-        try:
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(self._settings, f, indent=2, ensure_ascii=False)
-        except IOError as e:
-            print(f"Warning: Could not save settings to {self.config_path}: {e}")
-    
-    def value(self, key, default=None):
-        """Get a setting value (QSettings-compatible API)."""
-        value = self._settings.get(key, default)
-        
-        # If it's a base64-encoded QByteArray, decode it
-        if isinstance(value, str) and value.startswith("base64:"):
-            from PySide6.QtCore import QByteArray
-            try:
-                decoded = base64.b64decode(value[7:])
-                return QByteArray(decoded)
-            except Exception:
-                return default
-        
-        return value
-    
-    def setValue(self, key, value):
-        """Set a setting value and save immediately (QSettings-compatible API)."""
-        # Convert QByteArray to base64 string for JSON serialization
-        if hasattr(value, 'toBase64'):
-            # It's a QByteArray
-            value = "base64:" + value.toBase64().data().decode('utf-8')
-        
-        self._settings[key] = value
-        self._save()
-    
-    def allKeys(self):
-        """Return all setting keys (QSettings-compatible API)."""
-        return list(self._settings.keys())
-    
-    def fileName(self):
-        """Return the config file path (QSettings-compatible API)."""
-        return str(self.config_path)
-    
-    def contains(self, key):
-        """Check if a key exists (QSettings-compatible API)."""
-        return key in self._settings
-
-# ============================================================================
-# CONFIGURATION CONSTANTS
-# ============================================================================
-
-SUPPORTED_EXTENSIONS = {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg'}
-DEFAULT_ANALYSIS_RATE = 44100
-ANALYSIS_CHUNK_SAMPLES = 2048
-TRACK_END_THRESHOLD_MS = 500  # Detect end within 500ms
-TRACK_ADVANCE_DELAY_MS = 1000  # Reset flag after 1 second
-PROGRESS_UPDATE_INTERVAL_MS = 500
-EQUALIZER_UPDATE_INTERVAL_MS = 30
-SPLASH_SCREEN_DURATION_MS = 3000
-
-# ============================================================================
-# VLC ENVIRONMENT SETUP
-# ============================================================================
-
-def check_system_vlc():
-    """Check if VLC is installed system-wide and accessible."""
-    try:
-        # Try to create a VLC instance without specifying plugins
-        test_instance = vlc.Instance()
-        # If we can create an instance, VLC is available system-wide
-        print("✓ System-wide VLC installation detected")
-        return True
-    except Exception as e:
-        print(f"System-wide VLC not found: {e}")
-        return False
-
-def setup_vlc_environment():
-    """
-    Configure VLC environment.
-    Prefers system-wide VLC installation, falls back to local plugins if needed.
-    """
-    # First, try to use system-wide VLC
-    if check_system_vlc():
-        print("Using system-wide VLC installation")
-        return None  # Return None to indicate system VLC should be used
-    
-    # If system VLC not found, fall back to local plugins
-    print("System-wide VLC not available, checking for local plugins...")
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    plugins_dir = os.path.join(script_dir, "plugins")
-    
-    if not os.path.exists(plugins_dir):
-        print(f"⚠ Warning: No system VLC found and local plugins directory not found at {plugins_dir}")
-        print("VLC initialization may fail. Please install VLC or provide local plugins.")
-        return None
-    
-    # Configure environment for local plugins
-    os.environ['VLC_PLUGIN_PATH'] = plugins_dir
-    print(f"VLC plugin path set to: {plugins_dir}")
-    
-    if sys.platform == 'win32':
-        os.environ['PATH'] = plugins_dir + os.pathsep + os.environ.get('PATH', '')
-        parent_dir = os.path.dirname(plugins_dir)
-        if os.path.exists(os.path.join(parent_dir, 'libvlc.dll')):
-            os.environ['PATH'] = parent_dir + os.pathsep + os.environ['PATH']
-            print(f"Added to PATH: {parent_dir}")
-    
-    print(f"Using local VLC plugins from: {plugins_dir}")
-    return plugins_dir
-
-# ============================================================================
-# SIGNAL EMITTER FOR THREAD-SAFE GAPLESS PLAYBACK
-# ============================================================================
-
-class GaplessSignals(QObject):
-    """Qt signals for thread-safe communication from gapless manager."""
-    track_changed = Signal(str)  # Emits filepath of new track
-    start_equalizer = Signal(str)  # Start equalizer for filepath
-    stop_equalizer = Signal()  # Stop equalizer
-
-# ============================================================================
-# GAPLESS PLAYBACK MANAGER
-# ============================================================================
-
-class PlayerState(Enum):
-    """Player slot states for gapless playback."""
-    IDLE = 0
-    LOADING = 1
-    READY = 2
-    PLAYING = 3
-    FINISHING = 4
-
-class GaplessSignals(QObject):
-    """Qt signals for thread-safe communication from gapless manager."""
-    track_changed = Signal(str)  # Emits filepath of new track
-    start_equalizer = Signal(str)  # Start equalizer for filepath
-    stop_equalizer = Signal()  # Stop equalizer
-
-class GaplessPlaybackManager:
-    """
-    Manages dual VLC players for true gapless multiformat playback.
-    Uses two players that alternate - while one plays, the other preloads.
-    """
-    
-    def __init__(self, vlc_instance, eq_widget=None):
-        self.instance = vlc_instance
-        self.eq_widget = eq_widget
-        
-        # Qt signals for thread-safe communication
-        self.signals = GaplessSignals()
-        
-        # Create two players for alternating playback
-        self.player_a = self.instance.media_player_new()
-        self.player_b = self.instance.media_player_new()
-        
-        # Track which player is active
-        self.active_player = None
-        self.standby_player = None
-        
-        # State tracking
-        self.player_a_state = PlayerState.IDLE
-        self.player_b_state = PlayerState.IDLE
-        
-        # Volume tracking
-        self._current_volume = 70  # Default volume
-        
-        # Preload management
-        self.preload_lock = threading.Lock()
-        self.next_track_path = None
-        self.current_track_path = None
-        
-        # Gapless transition settings - trigger early enough to never miss
-        self.transition_threshold_ms = 500  # Start transition 500ms before end
-        self.monitoring = False
-        self.monitor_thread = None
-        self._stop_monitoring = threading.Event()
-        
-        # Transition flag to prevent double-triggers
-        self._transition_triggered = False
-        
-    def setup_events(self):
-        """Setup event handlers for both players."""
-        # Player A events
-        em_a = self.player_a.event_manager()
-        em_a.event_attach(vlc.EventType.MediaPlayerEndReached, 
-                         lambda e: self._on_player_end(self.player_a, 'A'))
-        
-        # Player B events
-        em_b = self.player_b.event_manager()
-        em_b.event_attach(vlc.EventType.MediaPlayerEndReached,
-                         lambda e: self._on_player_end(self.player_b, 'B'))
-    
-    def play_track(self, filepath, preload_next=None):
-        """
-        Play a track with optional preloading of next track.
-        
-        Args:
-            filepath: Path to audio file to play
-            preload_next: Optional path to next track for gapless transition
-        """
-        # Reset transition flag for new track
-        self._transition_triggered = False
-        
-        # Determine which player to use
-        if self.active_player is None:
-            # First track - use player A
-            self.active_player = self.player_a
-            self.standby_player = self.player_b
-            self.player_a_state = PlayerState.LOADING
-            
-            # Load media
-            media = self.instance.media_new(filepath)
-            self.active_player.set_media(media)
-            self.active_player.audio_set_volume(self._current_volume)
-            
-        elif self.standby_player and self._is_preloaded(filepath):
-            # Next track is preloaded - swap players for gapless
-            print(f"Using preloaded track: {os.path.basename(filepath)}")
-            self.active_player, self.standby_player = self.standby_player, self.active_player
-            self._update_states_after_swap()
-        else:
-            # Fallback - use standby player without preload
-            print(f"Loading track without preload: {os.path.basename(filepath)}")
-            if self.active_player == self.player_a:
-                self.active_player = self.player_b
-                self.standby_player = self.player_a
-                self.player_b_state = PlayerState.LOADING
-            else:
-                self.active_player = self.player_a
-                self.standby_player = self.player_b
-                self.player_a_state = PlayerState.LOADING
-            
-            # Load and play
-            media = self.instance.media_new(filepath)
-            self.active_player.set_media(media)
-            self.active_player.audio_set_volume(self._current_volume)
-        
-        # Start playback
-        self.current_track_path = filepath
-        self.active_player.play()
-        
-        print(f"Playing: {os.path.basename(filepath)} (Volume: {self.active_player.audio_get_volume()})")
-        print(f"  Active player: {'A' if self.active_player == self.player_a else 'B'}")
-        print(f"  Standby player: {'A' if self.standby_player == self.player_a else 'B'}")
-        print(f"  Transition flag reset: {self._transition_triggered}")
-        
-        # Start monitoring for gapless transition
-        self._start_monitoring()
-        
-        # Preload next track if provided (non-blocking)
-        if preload_next:
-            threading.Thread(target=self._preload_next_track, 
-                           args=(preload_next,), daemon=True).start()
-        
-        # Start equalizer for current track - emit signal instead of direct call
-        self.signals.start_equalizer.emit(filepath)
-    
-    def _is_preloaded(self, filepath):
-        """Check if the given filepath is already preloaded."""
-        return self.next_track_path == filepath and self.standby_player is not None
-    
-    def _update_states_after_swap(self):
-        """Update player states after swapping active/standby."""
-        if self.active_player == self.player_a:
-            self.player_a_state = PlayerState.PLAYING
-            self.player_b_state = PlayerState.IDLE
-        else:
-            self.player_b_state = PlayerState.PLAYING
-            self.player_a_state = PlayerState.IDLE
-    
-    def _preload_next_track(self, filepath):
-        """Preload the next track into standby player (runs in background thread)."""
-        if not self.standby_player:
-            print("❌ No standby player available for preloading")
-            print(f"   Active: {self.active_player}, Standby: {self.standby_player}")
-            return
-        
-        # Check if we're trying to preload the currently playing track
-        if self.current_track_path == filepath:
-            print(f"⚠️  Skipping preload - track is currently playing: {os.path.basename(filepath)}")
-            return
-        
-        # If already preloaded and it's the same track, skip
-        if self.next_track_path == filepath:
-            print(f"✓ Track already preloaded: {os.path.basename(filepath)}")
-            return
-        
-        try:
-            print(f"⏳ Preloading into player {'A' if self.standby_player == self.player_a else 'B'}: {os.path.basename(filepath)}")
-            
-            # Create media
-            media = self.instance.media_new(filepath)
-            
-            # Set media on standby player
-            with self.preload_lock:
-                # Clear old preload if it exists
-                if self.next_track_path:
-                    print(f"   Replacing old preload: {os.path.basename(self.next_track_path)}")
-                
-                self.standby_player.set_media(media)
-                
-                # Ensure volume is set
-                self.standby_player.audio_set_volume(self._current_volume)
-                
-                # Update state
-                if self.standby_player == self.player_a:
-                    self.player_a_state = PlayerState.READY
-                else:
-                    self.player_b_state = PlayerState.READY
-                
-                self.next_track_path = filepath
-                print(f"✓ Preloaded next track: {os.path.basename(filepath)}")
-                print(f"  Standby player: {'A' if self.standby_player == self.player_a else 'B'}")
-                print(f"  Standby player volume: {self._current_volume}")
-        except Exception as e:
-            print(f"❌ Error preloading track: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def _start_monitoring(self):
-        """Start monitoring playback position for gapless transitions."""
-        if not self.monitoring:
-            self.monitoring = True
-            self._stop_monitoring.clear()
-            self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-            self.monitor_thread.start()
-    
-    def _monitor_loop(self):
-        """Monitor playback position and trigger gapless transition."""
-        last_log_time = 0
-        
-        while not self._stop_monitoring.is_set():
-            try:
-                if self.active_player and self.active_player.is_playing():
-                    length = self.active_player.get_length()
-                    current = self.active_player.get_time()
-                    
-                    if length > 0 and current > 0:
-                        remaining = length - current
-                        
-                        # Log every 5 seconds to track progress
-                        if current - last_log_time > 5000:
-                            print(f"Playback: {current}ms / {length}ms (remaining: {remaining}ms)")
-                            last_log_time = current
-                        
-                        # Trigger transition near end (only once)
-                        if (remaining <= self.transition_threshold_ms and 
-                            remaining > 0 and 
-                            not self._transition_triggered):
-                            
-                            if self.standby_player and self.next_track_path:
-                                self._transition_triggered = True
-                                print(f"▶ Triggering gapless transition with {remaining}ms remaining")
-                                # Run transition immediately in this thread for precise timing
-                                self._trigger_gapless_transition()
-                            else:
-                                print(f"Cannot trigger transition: standby={self.standby_player is not None}, next_track={self.next_track_path is not None}")
-            except Exception as e:
-                print(f"Monitor loop error: {e}")
-            
-            time.sleep(0.02)  # Check every 20ms for precise timing
-    
-    def _trigger_gapless_transition(self):
-        """Trigger gapless transition to preloaded track."""
-        try:
-            with self.preload_lock:
-                if not self.next_track_path or not self.standby_player:
-                    print("Transition aborted: no next track or standby player")
-                    self._transition_triggered = False
-                    return
-                
-                print(f"🎵 Starting gapless transition to: {os.path.basename(self.next_track_path)}")
-                
-                # Get players
-                old_player = self.active_player
-                new_player = self.standby_player
-                
-                # Set volume and start new player immediately - no crossfade needed for true gapless
-                new_player.audio_set_volume(self._current_volume)
-                new_player.play()
-                
-                # Minimal wait for player to start
-                time.sleep(0.01)
-                
-                # Verify new player is playing
-                is_playing = new_player.is_playing()
-                
-                print(f"New player status: playing={is_playing}")
-                
-                if not is_playing:
-                    print("⚠ WARNING: New player not playing, retrying...")
-                    new_player.play()
-                    time.sleep(0.02)
-                    if not new_player.is_playing():
-                        print("❌ ERROR: Failed to start new player!")
-                        self._transition_triggered = False
-                        return
-                
-                # Complete the swap
-                self.active_player = new_player
-                self.standby_player = old_player
-                
-                # Update tracking
-                old_track = self.current_track_path
-                self.current_track_path = self.next_track_path
-                self.next_track_path = None
-                self._update_states_after_swap()
-                
-                # Emit signals FIRST (before stopping old player)
-                self.signals.track_changed.emit(self.current_track_path)
-                self.signals.start_equalizer.emit(self.current_track_path)
-                
-                # Stop old player after new one is confirmed playing
-                old_player.audio_set_volume(self._current_volume)  # Restore for next use
-                old_player.stop()
-                
-                print(f"✓ Gapless transition complete: {os.path.basename(old_track)} -> {os.path.basename(self.current_track_path)}")
-                print(f"  Active player: {'A' if self.active_player == self.player_a else 'B'}")
-                print(f"  Standby player: {'A' if self.standby_player == self.player_a else 'B'}")
-                    
-        except Exception as e:
-            print(f"Gapless transition error: {e}")
-            import traceback
-            traceback.print_exc()
-            self._transition_triggered = False
-    
-    def _on_player_end(self, player, name):
-        """Handle player end reached event."""
-        print(f"\n!!! Player {name} reached end (transition_triggered={self._transition_triggered})")
-        print(f"    Active player: {'A' if self.active_player == self.player_a else 'B'}")
-        print(f"    Standby player: {'A' if self.standby_player == self.player_a else 'B' if self.standby_player else 'None'}")
-        print(f"    next_track_path: {os.path.basename(self.next_track_path) if self.next_track_path else 'None'}")
-        print(f"    current_track_path: {os.path.basename(self.current_track_path) if self.current_track_path else 'None'}")
-        
-        # CRITICAL: Ignore end events from the standby player!
-        # Only the active player should trigger transitions
-        if player != self.active_player:
-            print(f"Ignoring end event from {'standby' if player == self.standby_player else 'inactive'} player")
-            return
-        
-        # Only use fallback if we haven't already transitioned
-        if self._transition_triggered:
-            print("Transition already completed, ignoring end event")
-            return
-        
-        # Check if there's actually a next track to play
-        if not self.next_track_path:
-            print("No next track - playback complete")
-            self._transition_triggered = True
-            # Stop monitoring
-            self._stop_monitoring.set()
-            self.monitoring = False
-            # Emit signal that playback ended
-            self.signals.stop_equalizer.emit()
-            return
-        
-        # Mark that we're handling the transition
-        self._transition_triggered = True
-        
-        # If this fires, gapless transition didn't work - we need to manually advance
-        print("WARNING: Gapless transition didn't fire, using fallback")
-        
-        # Don't just emit signal - actually play the next track if it's preloaded
-        if self.next_track_path and self.standby_player:
-            print(f"Fallback: Starting preloaded track {os.path.basename(self.next_track_path)}")
-            
-            # Swap to standby player and start it
-            with self.preload_lock:
-                old_player = self.active_player
-                new_player = self.standby_player
-                
-                # Save the track path before clearing
-                track_to_play = self.next_track_path
-                
-                # Ensure correct volume
-                new_player.audio_set_volume(self._current_volume)
-                
-                # Start new player
-                new_player.play()
-                
-                # Give it a moment to start
-                time.sleep(0.05)
-                
-                # Verify it's playing
-                if new_player.is_playing():
-                    print("Fallback: New player started successfully")
-                    
-                    # Complete the swap
-                    self.active_player = new_player
-                    self.standby_player = old_player
-                    
-                    # Stop old player
-                    old_player.stop()
-                    
-                    # Update tracking
-                    self.current_track_path = track_to_play
-                    # DON'T clear next_track_path yet - let the preload replace it
-                    # self.next_track_path = None  # ← REMOVED THIS
-                    self._update_states_after_swap()
-                    
-                    print(f"Fallback complete:")
-                    print(f"  Active player: {'A' if self.active_player == self.player_a else 'B'}")
-                    print(f"  Standby player: {'A' if self.standby_player == self.player_a else 'B'}")
-                    
-                    # Emit signals for UI update
-                    # This will call _on_gapless_track_change which resets the flag AND preloads next
-                    self.signals.track_changed.emit(self.current_track_path)
-                    self.signals.start_equalizer.emit(self.current_track_path)
-                else:
-                    print("ERROR: Fallback player failed to start")
-                    self._transition_triggered = False  # Reset on failure
-        else:
-            print(f"❌ No preloaded track available for fallback")
-            print(f"    next_track_path: {self.next_track_path}")
-            print(f"    standby_player: {self.standby_player}")
-            self._transition_triggered = False  # Reset if no track to play
-            
-    def pause(self):
-        """Pause active player."""
-        if self.active_player and self.active_player.is_playing():
-            self.active_player.pause()
-            print("Playback paused")
-            # Emit signal to stop equalizer timer
-            self.signals.stop_equalizer.emit()
-        else:
-            print("Cannot pause: not playing")
-    
-    def resume(self):
-        """Resume active player from paused state."""
-        if self.active_player and self.current_track_path:
-            # Check if paused (not playing but has media)
-            if not self.active_player.is_playing():
-                self.active_player.play()
-                
-                # Restart monitoring
-                self._start_monitoring()
-                
-                # Emit signal to start equalizer
-                self.signals.start_equalizer.emit(self.current_track_path)
-                
-                print(f"Resumed playback: {os.path.basename(self.current_track_path)}")
-            else:
-                print("Already playing")
-        else:
-            print("Cannot resume: no active player or track")
-    
-    def stop(self):
-        """Stop all playback completely."""
-        # Stop monitoring
-        self.monitoring = False
-        self._stop_monitoring.set()
-        if self.monitor_thread and self.monitor_thread.is_alive():
-            self.monitor_thread.join(timeout=0.2)
-        
-        # Emit signal to stop equalizer
-        self.signals.stop_equalizer.emit()
-        
-        # Stop both players completely
-        try:
-            if self.active_player:
-                self.active_player.stop()
-            if self.standby_player:
-                self.standby_player.stop()
-        except Exception as e:
-            print(f"Error stopping players: {e}")
-        
-        # Reset everything for a fresh start
-        self.active_player = None
-        self.standby_player = None
-        self.player_a_state = PlayerState.IDLE
-        self.player_b_state = PlayerState.IDLE
-        self.current_track_path = None
-        self.next_track_path = None
-        self._transition_triggered = False
-        
-        print("Playback stopped completely")
-    
-    def is_playing(self):
-        """Check if currently playing."""
-        return self.active_player and self.active_player.is_playing()
-    
-    def get_active_player(self):
-        """Get the currently active player."""
-        return self.active_player
-    
-    def set_volume(self, volume):
-        """Set volume for both players."""
-        self._current_volume = volume
-        self.player_a.audio_set_volume(volume)
-        self.player_b.audio_set_volume(volume)
-    
-    def get_time(self):
-        """Get current playback time."""
-        if self.active_player:
-            return self.active_player.get_time()
-        return 0
-    
-    def get_length(self):
-        """Get total track length."""
-        if self.active_player:
-            return self.active_player.get_length()
-        return 0
-    
-    def set_time(self, time_ms):
-        """Seek to specific time."""
-        if self.active_player:
-            self.active_player.set_time(time_ms)
-            
-# ============================================================================
-# UTILITY FUNCTIONS
-# ============================================================================
-
-def is_dark_color(color: QColor) -> bool:
-    """Determine if a color is dark based on perceived brightness."""
-    brightness = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
-    return brightness < 128
+    return QIcon(QPixmap.fromImage(image))
 
 def extract_album_art(filepath):
     """Extract album art from audio file metadata."""
@@ -808,6 +173,391 @@ def extract_metadata(path, trackno):
     }
 
 # ============================================================================
+# JSON SETTINGS MANAGER
+# ============================================================================
+
+class JsonSettings:
+    """Cross-platform JSON-based settings manager compatible with QSettings API."""
+    
+    def __init__(self, config_name="config.json"):
+        self.config_path = Path(__file__).parent / config_name
+        self._settings = {}
+        self._load()
+    
+    def _load(self):
+        if self.config_path.exists():
+            try:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    self._settings = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Warning: Could not load settings: {e}")
+                self._settings = {}
+    
+    def _save(self):
+        try:
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(self._settings, f, indent=2, ensure_ascii=False)
+        except IOError as e:
+            print(f"Warning: Could not save settings: {e}")
+    
+    def value(self, key, default=None):
+        value = self._settings.get(key, default)
+        if isinstance(value, str) and value.startswith("base64:"):
+            try:
+                decoded = base64.b64decode(value[7:])
+                return QByteArray(decoded)
+            except Exception:
+                return default
+        return value
+    
+    def setValue(self, key, value):
+        if hasattr(value, 'toBase64'):
+            value = "base64:" + value.toBase64().data().decode('utf-8')
+        self._settings[key] = value
+        self._save()
+    
+    def allKeys(self):
+        return list(self._settings.keys())
+    
+    def fileName(self):
+        return str(self.config_path)
+    
+    def contains(self, key):
+        return key in self._settings
+    
+    def remove(self, key):
+        if key in self._settings:
+            del self._settings[key]
+            self._save()
+
+# ============================================================================
+# VLC SETUP
+# ============================================================================
+
+def setup_vlc_environment():
+    """Configure VLC environment (prefers system-wide VLC)."""
+    try:
+        test_instance = vlc.Instance()
+        print("✓ System-wide VLC installation detected")
+        return None
+    except Exception:
+        print("System-wide VLC not available, checking for local plugins...")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        plugins_dir = os.path.join(script_dir, "plugins")
+        
+        if not os.path.exists(plugins_dir):
+            print("⚠ Warning: No VLC found. Please install VLC.")
+            return None
+        
+        os.environ['VLC_PLUGIN_PATH'] = plugins_dir
+        if sys.platform == 'win32':
+            os.environ['PATH'] = plugins_dir + os.pathsep + os.environ.get('PATH', '')
+        
+        print(f"Using local VLC plugins from: {plugins_dir}")
+        return plugins_dir
+
+# ============================================================================
+# GAPLESS PLAYBACK
+# ============================================================================
+
+class PlayerState(Enum):
+    """Player slot states for gapless playback."""
+    IDLE = 0
+    LOADING = 1
+    READY = 2
+    PLAYING = 3
+    FINISHING = 4
+
+class GaplessSignals(QObject):
+    """Qt signals for thread-safe communication."""
+    track_changed = Signal(str)
+    start_equalizer = Signal(str)
+    stop_equalizer = Signal()
+
+class GaplessPlaybackManager:
+    """Manages dual VLC players for true gapless multiformat playback."""
+    
+    def __init__(self, vlc_instance, eq_widget=None):
+        self.instance = vlc_instance
+        self.eq_widget = eq_widget
+        self.signals = GaplessSignals()
+        
+        # Create two players for alternating playback
+        self.player_a = self.instance.media_player_new()
+        self.player_b = self.instance.media_player_new()
+        
+        self.active_player = None
+        self.standby_player = None
+        self.player_a_state = PlayerState.IDLE
+        self.player_b_state = PlayerState.IDLE
+        
+        self._current_volume = 70
+        self.preload_lock = threading.Lock()
+        self.next_track_path = None
+        self.current_track_path = None
+        
+        self.transition_threshold_ms = 500
+        self.monitoring = False
+        self.monitor_thread = None
+        self._stop_monitoring = threading.Event()
+        self._transition_triggered = False
+        
+    def setup_events(self):
+        """Setup event handlers for both players."""
+        em_a = self.player_a.event_manager()
+        em_a.event_attach(vlc.EventType.MediaPlayerEndReached, 
+                         lambda e: self._on_player_end(self.player_a, 'A'))
+        
+        em_b = self.player_b.event_manager()
+        em_b.event_attach(vlc.EventType.MediaPlayerEndReached,
+                         lambda e: self._on_player_end(self.player_b, 'B'))
+    
+    def play_track(self, filepath, preload_next=None):
+        """Play a track with optional preloading of next track."""
+        self._transition_triggered = False
+        
+        if self.active_player is None:
+            self.active_player = self.player_a
+            self.standby_player = self.player_b
+            self.player_a_state = PlayerState.LOADING
+            media = self.instance.media_new(filepath)
+            self.active_player.set_media(media)
+            self.active_player.audio_set_volume(self._current_volume)
+            
+        elif self.standby_player and self._is_preloaded(filepath):
+            print(f"Using preloaded track: {os.path.basename(filepath)}")
+            self.active_player, self.standby_player = self.standby_player, self.active_player
+            self._update_states_after_swap()
+        else:
+            print(f"Loading track without preload: {os.path.basename(filepath)}")
+            if self.active_player == self.player_a:
+                self.active_player = self.player_b
+                self.standby_player = self.player_a
+                self.player_b_state = PlayerState.LOADING
+            else:
+                self.active_player = self.player_a
+                self.standby_player = self.player_b
+                self.player_a_state = PlayerState.LOADING
+            
+            media = self.instance.media_new(filepath)
+            self.active_player.set_media(media)
+            self.active_player.audio_set_volume(self._current_volume)
+        
+        self.current_track_path = filepath
+        self.active_player.play()
+        
+        self._start_monitoring()
+        
+        if preload_next:
+            threading.Thread(target=self._preload_next_track, 
+                           args=(preload_next,), daemon=True).start()
+        
+        self.signals.start_equalizer.emit(filepath)
+    
+    def _is_preloaded(self, filepath):
+        return self.next_track_path == filepath and self.standby_player is not None
+    
+    def _update_states_after_swap(self):
+        if self.active_player == self.player_a:
+            self.player_a_state = PlayerState.PLAYING
+            self.player_b_state = PlayerState.IDLE
+        else:
+            self.player_b_state = PlayerState.PLAYING
+            self.player_a_state = PlayerState.IDLE
+    
+    def _preload_next_track(self, filepath):
+        """Preload the next track into standby player."""
+        if not self.standby_player or self.current_track_path == filepath:
+            return
+        
+        if self.next_track_path == filepath:
+            print(f"✓ Track already preloaded: {os.path.basename(filepath)}")
+            return
+        
+        try:
+            print(f"⏳ Preloading: {os.path.basename(filepath)}")
+            media = self.instance.media_new(filepath)
+            
+            with self.preload_lock:
+                self.standby_player.set_media(media)
+                self.standby_player.audio_set_volume(self._current_volume)
+                
+                if self.standby_player == self.player_a:
+                    self.player_a_state = PlayerState.READY
+                else:
+                    self.player_b_state = PlayerState.READY
+                
+                self.next_track_path = filepath
+                print(f"✓ Preloaded next track: {os.path.basename(filepath)}")
+        except Exception as e:
+            print(f"❌ Error preloading track: {e}")
+    
+    def _start_monitoring(self):
+        if not self.monitoring:
+            self.monitoring = True
+            self._stop_monitoring.clear()
+            self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+            self.monitor_thread.start()
+    
+    def _monitor_loop(self):
+        """Monitor playback position and trigger gapless transition."""
+        while not self._stop_monitoring.is_set():
+            try:
+                if self.active_player and self.active_player.is_playing():
+                    length = self.active_player.get_length()
+                    current = self.active_player.get_time()
+                    
+                    if length > 0 and current > 0:
+                        remaining = length - current
+                        
+                        if (remaining <= self.transition_threshold_ms and 
+                            remaining > 0 and 
+                            not self._transition_triggered):
+                            
+                            if self.standby_player and self.next_track_path:
+                                self._transition_triggered = True
+                                self._trigger_gapless_transition()
+            except Exception as e:
+                print(f"Monitor loop error: {e}")
+            
+            time.sleep(0.02)
+    
+    def _trigger_gapless_transition(self):
+        """Trigger gapless transition to preloaded track."""
+        try:
+            with self.preload_lock:
+                if not self.next_track_path or not self.standby_player:
+                    self._transition_triggered = False
+                    return
+                
+                print(f"🎵 Gapless transition to: {os.path.basename(self.next_track_path)}")
+                
+                old_player = self.active_player
+                new_player = self.standby_player
+                
+                new_player.audio_set_volume(self._current_volume)
+                new_player.play()
+                time.sleep(0.01)
+                
+                if not new_player.is_playing():
+                    new_player.play()
+                    time.sleep(0.02)
+                    if not new_player.is_playing():
+                        print("❌ ERROR: Failed to start new player!")
+                        self._transition_triggered = False
+                        return
+                
+                self.active_player = new_player
+                self.standby_player = old_player
+                
+                old_track = self.current_track_path
+                self.current_track_path = self.next_track_path
+                self.next_track_path = None
+                self._update_states_after_swap()
+                
+                self.signals.track_changed.emit(self.current_track_path)
+                self.signals.start_equalizer.emit(self.current_track_path)
+                
+                old_player.audio_set_volume(self._current_volume)
+                old_player.stop()
+                
+                print(f"✓ Transition complete: {os.path.basename(old_track)} -> {os.path.basename(self.current_track_path)}")
+                    
+        except Exception as e:
+            print(f"Gapless transition error: {e}")
+            self._transition_triggered = False
+    
+    def _on_player_end(self, player, name):
+        """Handle player end reached event."""
+        if player != self.active_player or self._transition_triggered:
+            return
+        
+        if not self.next_track_path:
+            self._transition_triggered = True
+            self._stop_monitoring.set()
+            self.monitoring = False
+            self.signals.stop_equalizer.emit()
+            return
+        
+        self._transition_triggered = True
+        print("WARNING: Gapless transition didn't fire, using fallback")
+        
+        if self.next_track_path and self.standby_player:
+            with self.preload_lock:
+                old_player = self.active_player
+                new_player = self.standby_player
+                track_to_play = self.next_track_path
+                
+                new_player.audio_set_volume(self._current_volume)
+                new_player.play()
+                time.sleep(0.05)
+                
+                if new_player.is_playing():
+                    self.active_player = new_player
+                    self.standby_player = old_player
+                    old_player.stop()
+                    self.current_track_path = track_to_play
+                    self._update_states_after_swap()
+                    self.signals.track_changed.emit(self.current_track_path)
+                    self.signals.start_equalizer.emit(self.current_track_path)
+                else:
+                    self._transition_triggered = False
+            
+    def pause(self):
+        if self.active_player and self.active_player.is_playing():
+            self.active_player.pause()
+            self.signals.stop_equalizer.emit()
+    
+    def resume(self):
+        if self.active_player and self.current_track_path:
+            if not self.active_player.is_playing():
+                self.active_player.play()
+                self._start_monitoring()
+                self.signals.start_equalizer.emit(self.current_track_path)
+    
+    def stop(self):
+        self.monitoring = False
+        self._stop_monitoring.set()
+        self.signals.stop_equalizer.emit()
+        
+        try:
+            if self.active_player:
+                self.active_player.stop()
+            if self.standby_player:
+                self.standby_player.stop()
+        except Exception as e:
+            print(f"Error stopping players: {e}")
+        
+        self.active_player = None
+        self.standby_player = None
+        self.player_a_state = PlayerState.IDLE
+        self.player_b_state = PlayerState.IDLE
+        self.current_track_path = None
+        self.next_track_path = None
+        self._transition_triggered = False
+    
+    def is_playing(self):
+        return self.active_player and self.active_player.is_playing()
+    
+    def get_active_player(self):
+        return self.active_player
+    
+    def set_volume(self, volume):
+        self._current_volume = volume
+        self.player_a.audio_set_volume(volume)
+        self.player_b.audio_set_volume(volume)
+    
+    def get_time(self):
+        return self.active_player.get_time() if self.active_player else 0
+    
+    def get_length(self):
+        return self.active_player.get_length() if self.active_player else 0
+    
+    def set_time(self, time_ms):
+        if self.active_player:
+            self.active_player.set_time(time_ms)
+
+# ============================================================================
 # EQUALIZER WIDGET
 # ============================================================================
 
@@ -819,14 +569,13 @@ class EqualizerWidget(QWidget):
         self.bar_count = bar_count
         self.segments = segments
         self.levels = [0] * bar_count
-        self.target_levels = [0] * bar_count  # Target levels for smooth interpolation
-        self.peak_levels = [0] * bar_count    # Peak tracking for smoother decay
-        self.peak_hold = [0] * bar_count      # Peak hold positions for visual indicator
-        self.peak_hold_time = [0] * bar_count # Time counter for peak hold
-        self.velocity = [0] * bar_count       # Velocity for gravity effect
+        self.target_levels = [0] * bar_count
+        self.peak_hold = [0] * bar_count
+        self.peak_hold_time = [0] * bar_count
+        self.velocity = [0] * bar_count
         self.color = QColor("#00cc66")
-        self.custom_peak_color = None         # Custom peak color (None = auto)
-        self.peak_alpha = 255                 # Peak transparency (0-255, 255 = opaque)
+        self.custom_peak_color = None
+        self.peak_alpha = 255
         self.buffer_size = ANALYSIS_CHUNK_SAMPLES
         self.sample_buffer = np.zeros(self.buffer_size, dtype=np.float32)
         self._band_ema_max = [1e-6] * bar_count
@@ -838,81 +587,60 @@ class EqualizerWidget(QWidget):
         self.timer.timeout.connect(self.update_from_fft)
 
     def set_peak_color(self, color: QColor):
-        """Set a custom peak indicator color."""
         if color and color.isValid():
             self.custom_peak_color = color
             self.update()
     
     def reset_peak_color(self):
-        """Reset to automatic peak color."""
         self.custom_peak_color = None
         self.update()
         
     def set_peak_alpha(self, alpha: int):
-        """Set peak indicator transparency (0-255, 255 = opaque)."""
         self.peak_alpha = max(0, min(255, alpha))
-        self.update()        
+        self.update()
 
     def start(self, filepath):
-        """Start the equalizer decoder and animation."""
-        # Stop existing decoder cleanly if running
         if self._decoder_running:
             self._decoder_running = False
             self._stop_decoder.set()
-            # Don't wait for thread - let it die naturally
             self._decoder_thread = None
         
-        # Reset stop event
         self._stop_decoder.clear()
-        
-        # Start new decoder thread
         self._decoder_running = True
         self._decoder_thread = threading.Thread(
             target=self._decode_loop, args=(filepath,), daemon=True
         )
         self._decoder_thread.start()
         
-        # Start timer if not active (safe because we're on main thread)
         if not self.timer.isActive():
             self.timer.start(EQUALIZER_UPDATE_INTERVAL_MS)
 
     def stop(self, clear_display=True):
-        """Stop the equalizer decoder and animation."""
         self._decoder_running = False
         self._stop_decoder.set()
-        # Don't join - just let the thread die
         self._decoder_thread = None
         
-        # Only stop timer if we're on the main thread
-        # This check prevents the cross-thread timer error
         if QThread.currentThread() == QApplication.instance().thread():
             self.timer.stop()
             if clear_display:
-                self.levels = [0] * self.bar_count
-                self.target_levels = [0] * self.bar_count
-                self.peak_levels = [0] * self.bar_count
-                self.peak_hold = [0] * self.bar_count
-                self.peak_hold_time = [0] * self.bar_count
-                self.velocity = [0] * self.bar_count
-                self.update()
+                self._clear_display()
         else:
-            # We're on a background thread - use signal to stop timer
             QTimer.singleShot(0, lambda: self._stop_on_main_thread(clear_display))
     
     def _stop_on_main_thread(self, clear_display):
-        """Stop timer on main thread."""
         self.timer.stop()
         if clear_display:
-            self.levels = [0] * self.bar_count
-            self.target_levels = [0] * self.bar_count
-            self.peak_levels = [0] * self.bar_count
-            self.peak_hold = [0] * self.bar_count
-            self.peak_hold_time = [0] * self.bar_count
-            self.velocity = [0] * self.bar_count
-            self.update()
+            self._clear_display()
+    
+    def _clear_display(self):
+        self.levels = [0] * self.bar_count
+        self.target_levels = [0] * self.bar_count
+        self.peak_hold = [0] * self.bar_count
+        self.peak_hold_time = [0] * self.bar_count
+        self.velocity = [0] * self.bar_count
+        self.update()
 
     def _decode_loop(self, filepath):
-        """Background thread for audio decoding."""
         try:
             with sf.SoundFile(filepath) as f:
                 while self._decoder_running and not self._stop_decoder.is_set():
@@ -929,7 +657,6 @@ class EqualizerWidget(QWidget):
                     
                     self.sample_buffer = samples
                     
-                    # Check stop event more frequently
                     sleep_time = len(samples) / DEFAULT_ANALYSIS_RATE
                     elapsed = 0
                     while elapsed < sleep_time and not self._stop_decoder.is_set():
@@ -940,71 +667,51 @@ class EqualizerWidget(QWidget):
             print(f"Decoder thread error: {e}")
 
     def update_from_fft(self):
-        """Update equalizer bars from FFT analysis."""
         if not self._decoder_running:
             return
             
         fft = np.fft.rfft(self.sample_buffer * np.hanning(len(self.sample_buffer)))
         magnitude = np.abs(fft)
-
         freqs_hz = np.fft.rfftfreq(len(self.sample_buffer), 1.0 / DEFAULT_ANALYSIS_RATE)
         mask = (freqs_hz >= 60) & (freqs_hz <= 17000)
         magnitude = magnitude[mask]
 
         bars_raw = self._calculate_bar_values(magnitude)
         bars_norm = self._normalize_bars(bars_raw)
-        
-        # Set target levels with slightly increased height
         self.target_levels = [max(0, min(self.segments, v * 0.82)) for v in bars_norm]
-        
-        # Smooth interpolation with gravity effect
         self._smooth_levels_with_gravity()
-        
         self.update()
 
     def _smooth_levels_with_gravity(self):
-        """Apply smooth interpolation with gravity physics and peak hold."""
-        gravity = 0.4  # Gravity acceleration
-        peak_hold_frames = 12  # Hold peak for ~12 frames (360ms at 30fps) - reduced from 15
+        gravity = 0.4
+        peak_hold_frames = 12
         
         for i in range(self.bar_count):
             target = self.target_levels[i]
             current = self.levels[i]
             
-            # If target is higher than current, rise quickly
             if target > current:
-                # Quick rise with 95% interpolation
                 self.levels[i] = current + (target - current) * 0.95
-                self.velocity[i] = 0  # Reset velocity on rise
-                
-                # Update peak hold if we've reached a new peak
+                self.velocity[i] = 0
                 if self.levels[i] > self.peak_hold[i]:
                     self.peak_hold[i] = self.levels[i]
                     self.peak_hold_time[i] = peak_hold_frames
             else:
-                # Apply gravity for natural fall
                 self.velocity[i] += gravity
                 self.levels[i] = max(target, current - self.velocity[i])
-                
-                # Ensure level doesn't go below target
                 if self.levels[i] <= target:
                     self.levels[i] = target
                     self.velocity[i] = 0
             
-            # Handle peak hold indicator
             if self.peak_hold_time[i] > 0:
-                # Peak is held - decrease hold time
                 self.peak_hold_time[i] -= 1
             else:
-                # Peak hold expired - let it fall faster
                 if self.peak_hold[i] > self.levels[i]:
-                    # Peak falls faster than before
-                    self.peak_hold[i] = max(self.levels[i], self.peak_hold[i] - 0.5)  # Increased from 0.3
+                    self.peak_hold[i] = max(self.levels[i], self.peak_hold[i] - 0.5)
                 else:
                     self.peak_hold[i] = self.levels[i]
 
     def _calculate_bar_values(self, magnitude):
-        """Calculate raw bar values from FFT magnitude."""
         bars_raw = [0.0] * self.bar_count
         if len(magnitude) == 0:
             return bars_raw
@@ -1015,43 +722,31 @@ class EqualizerWidget(QWidget):
             end = int((i + 1) * chunk_size)
             band = magnitude[start:end]
             bars_raw[i] = float(np.mean(band)) if len(band) else 0.0
-        
         return bars_raw
 
     def _normalize_bars(self, bars_raw):
-        """Normalize bars using exponential moving average."""
-        decay = 0.95  # Fast decay for very quick response
+        decay = 0.95
         eps = 1e-6
         bars_norm = []
         
         for i, val in enumerate(bars_raw):
             ema_candidate = self._band_ema_max[i] * decay
             self._band_ema_max[i] = max(val, ema_candidate)
-            
             norm = val / (self._band_ema_max[i] + eps)
-            
-            # Moderate high frequency emphasis
             hf_tilt = 1.0 + 0.22 * (i / max(1, self.bar_count - 1))
             norm *= hf_tilt
-            
-            # Good bass boost
             if i < 2:
                 norm *= 1.18
-            
-            # Increased scaling for 2-3 bars more height
             scaled = norm * (self.segments * 0.87)
             bars_norm.append(int(scaled))
-        
         return bars_norm
 
     def update_color(self, color: QColor):
-        """Update equalizer color."""
         if color:
             self.color = color
             self.update()
 
     def paintEvent(self, event):
-        """Paint the equalizer bars with peak hold indicators."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         
@@ -1073,29 +768,12 @@ class EqualizerWidget(QWidget):
                 )
                 painter.fillRect(rect, faded_color)
             
-            # Draw peak hold indicator with smart complementary color and custom alpha
+            # Draw peak hold indicator
             if self.peak_hold[i] > 0:
                 peak_seg = int(self.peak_hold[i])
                 if peak_seg < self.segments:
-                    # Calculate intelligent peak color based on accent color
                     peak_color = self._get_peak_color()
-                    # Apply custom alpha/transparency
                     peak_color.setAlpha(self.peak_alpha)
-                    
-                    peak_rect = QRect(
-                        int(i * bar_width),
-                        int(self.height() - (peak_seg + 1) * segment_height),
-                        int(bar_width * 0.85),
-                        int(segment_height * 0.4)
-                    )
-                    painter.fillRect(peak_rect, peak_color)
-            
-            # Draw peak hold indicator with smart complementary color
-            if self.peak_hold[i] > 0:
-                peak_seg = int(self.peak_hold[i])
-                if peak_seg < self.segments:
-                    # Calculate intelligent peak color based on accent color
-                    peak_color = self._get_peak_color()
                     
                     peak_rect = QRect(
                         int(i * bar_width),
@@ -1106,48 +784,20 @@ class EqualizerWidget(QWidget):
                     painter.fillRect(peak_rect, peak_color)
     
     def _get_peak_color(self):
-        """
-        Calculate an intelligent peak color that complements the accent color.
-        Uses color theory to create visually appealing contrast.
-        """
-        # If custom color is set, use it
         if self.custom_peak_color:
             return self.custom_peak_color
         
-        # Otherwise, calculate automatic complementary color
         h, s, v, a = self.color.getHsv()
-        
-        # Get luminance (brightness) of the base color
         r, g, b = self.color.red(), self.color.green(), self.color.blue()
         luminance = 0.299 * r + 0.587 * g + 0.114 * b
         
-        # Strategy 1: If color is dark, make peak much brighter (light version)
         if luminance < 128:
-            # Dark color - use a much lighter, more saturated version
-            peak_color = QColor.fromHsv(
-                h,  # Same hue
-                max(180, s),  # High saturation
-                min(255, v + 120)  # Much brighter
-            )
-        # Strategy 2: If color is light, make peak slightly darker but more saturated
+            return QColor.fromHsv(h, max(180, s), min(255, v + 120))
         elif luminance > 180:
-            # Light color - use a richer, more saturated version
-            peak_color = QColor.fromHsv(
-                h,  # Same hue
-                min(255, s + 80),  # More saturated
-                max(150, v - 30)  # Slightly darker for contrast
-            )
-        # Strategy 3: Medium colors - shift hue slightly and increase saturation
+            return QColor.fromHsv(h, min(255, s + 80), max(150, v - 30))
         else:
-            # Medium brightness - use analogous color (shift hue slightly)
-            new_hue = (h + 20) % 360  # Shift hue by 20 degrees
-            peak_color = QColor.fromHsv(
-                new_hue,
-                min(255, s + 60),  # More saturated
-                min(255, v + 60)  # Brighter
-            )
-        
-        return peak_color
+            new_hue = (h + 20) % 360
+            return QColor.fromHsv(new_hue, min(255, s + 60), min(255, v + 60))
 
 # ============================================================================
 # PLAYLIST MODEL
@@ -1173,7 +823,6 @@ class PlaylistModel(QAbstractTableModel):
         return len(self.HEADERS)
 
     def data(self, index, role=Qt.DisplayRole):
-        """Return data for the given index and role."""
         if not index.isValid():
             return None
         
@@ -1181,7 +830,16 @@ class PlaylistModel(QAbstractTableModel):
         col = index.column()
         
         if role == Qt.DisplayRole:
-            return self._get_display_data(track, col, index.row())
+            if col == 0:
+                return f"{track.get('trackno', index.row() + 1):02d}"
+            elif col == 1:
+                return track.get("title", "")
+            elif col == 2:
+                return track.get("artist", "")
+            elif col == 3:
+                return track.get("album", "")
+            elif col == 4:
+                return track.get("year", "")
         elif role == Qt.FontRole and index.row() == self.current_index:
             font = QFont()
             font.setBold(True)
@@ -1191,28 +849,9 @@ class PlaylistModel(QAbstractTableModel):
            
         return None
 
-    def _get_display_data(self, track, col, row):
-        """Get display data for a specific column."""
-        if col == 0:
-            return f"{track.get('trackno', row + 1):02d}"
-        elif col == 1:
-            return track.get("title", "")
-        elif col == 2:
-            return track.get("artist", "")
-        elif col == 3:
-            return track.get("album", "")
-        elif col == 4:
-            return track.get("year", "")
-        return None
-
     def _get_playback_icon(self):
-        """Get the appropriate playback icon based on state and theme."""
         if not self.controller:
             return None
-        
-        # Always check system theme for icon color
-        from PySide6.QtWidgets import QApplication
-        from PySide6.QtGui import QPalette
         
         use_white_icon = False
         app = QApplication.instance()
@@ -1220,8 +859,6 @@ class PlaylistModel(QAbstractTableModel):
             base_color = app.palette().color(QPalette.Base)
             use_white_icon = is_dark_color(base_color)
         
-        # If there's a highlight color, also check if that's dark
-        # (for the currently playing row with custom highlight)
         if self.highlight_color:
             use_white_icon = is_dark_color(self.highlight_color)
         
@@ -1233,13 +870,11 @@ class PlaylistModel(QAbstractTableModel):
             return self.icons.get("row_pause_white" if use_white_icon else "row_pause")
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
-        """Return header data."""
         if role == Qt.DisplayRole and orientation == Qt.Horizontal:
             return self.HEADERS[section]
         return None
 
     def add_tracks(self, paths, clear=False):
-        """Add tracks to the playlist."""
         if clear:
             self.clear()
         
@@ -1259,7 +894,6 @@ class PlaylistModel(QAbstractTableModel):
                 self.set_current_index(-1)
 
     def clear(self):
-        """Clear all tracks from the playlist."""
         if self._tracks:
             self.beginRemoveRows(QModelIndex(), 0, len(self._tracks) - 1)
             self._tracks.clear()
@@ -1267,14 +901,11 @@ class PlaylistModel(QAbstractTableModel):
             self.set_current_index(-1)
 
     def path_at(self, row):
-        """Get the file path at the given row."""
         return self._tracks[row]["path"] if 0 <= row < len(self._tracks) else None
 
     def set_current_index(self, row):
-        """Set the currently playing track index."""
         if self.current_index == row:
             return
-        
         self.current_index = row
         if self.rowCount() > 0:
             top_left = self.index(0, 0)
@@ -1282,37 +913,25 @@ class PlaylistModel(QAbstractTableModel):
             self.dataChanged.emit(top_left, bottom_right)
     
     def supportedDropActions(self):
-        """Return supported drop actions for drag and drop."""
         return Qt.MoveAction | Qt.CopyAction
     
     def flags(self, index):
-        """Return item flags - enable drag and drop."""
         default_flags = super().flags(index)
         if index.isValid():
             return default_flags | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled
         return default_flags | Qt.ItemIsDropEnabled
     
     def mimeTypes(self):
-        """Return supported MIME types for drag and drop."""
         return ['application/x-playlist-track-index', 'text/uri-list']
     
     def mimeData(self, indexes):
-        """Create MIME data for dragged items."""
-        from PySide6.QtCore import QMimeData
         mime_data = QMimeData()
-        
-        # Get unique rows from indexes
         rows = sorted(set(index.row() for index in indexes if index.isValid()))
-        
         if rows:
-            # Store the row index for internal moves
             mime_data.setData('application/x-playlist-track-index', str(rows[0]).encode())
-        
         return mime_data
     
     def canDropMimeData(self, data, action, row, column, parent):
-        """Check if drop is allowed."""
-        # Allow drops of internal playlist items or external files
         if data.hasFormat('application/x-playlist-track-index'):
             return True
         if data.hasUrls():
@@ -1320,73 +939,44 @@ class PlaylistModel(QAbstractTableModel):
         return False
     
     def dropMimeData(self, data, action, row, column, parent):
-        """Handle dropped data - reorder tracks or add new ones."""
-        # Handle internal playlist reordering
         if data.hasFormat('application/x-playlist-track-index'):
             source_row = int(data.data('application/x-playlist-track-index').data().decode())
-            
-            # Determine target row
             if row == -1:
-                if parent.isValid():
-                    target_row = parent.row()
-                else:
-                    target_row = self.rowCount()
+                target_row = parent.row() if parent.isValid() else self.rowCount()
             else:
                 target_row = row
             
-            # Can't drop on itself
             if source_row == target_row or source_row == target_row - 1:
                 return False
             
-            # Move the track
             self.moveRow(QModelIndex(), source_row, QModelIndex(), target_row)
             return True
-        
-        # Handle external file drops (let the view handle this via dropEvent)
         return False
     
     def moveRow(self, sourceParent, sourceRow, destinationParent, destinationRow):
-        """Move a row from source to destination."""
         if sourceRow < 0 or sourceRow >= len(self._tracks):
             return False
         
-        # Adjust destination if moving down
-        if destinationRow > sourceRow:
-            actual_dest = destinationRow - 1
-        else:
-            actual_dest = destinationRow
+        actual_dest = destinationRow - 1 if destinationRow > sourceRow else destinationRow
         
-        # Check bounds
         if actual_dest < 0 or actual_dest > len(self._tracks):
             return False
         
-        # Perform the move
         self.beginMoveRows(sourceParent, sourceRow, sourceRow, destinationParent, destinationRow)
-        
-        # Extract track
         track = self._tracks.pop(sourceRow)
-        
-        # Insert at new position
         self._tracks.insert(actual_dest, track)
         
-        # Update current_index if needed
         if self.current_index == sourceRow:
-            # The currently playing track was moved
             self.current_index = actual_dest
         elif sourceRow < self.current_index <= actual_dest:
-            # Current track shifted up
             self.current_index -= 1
         elif actual_dest <= self.current_index < sourceRow:
-            # Current track shifted down
             self.current_index += 1
         
         self.endMoveRows()
         
-        # CRITICAL: Refresh the preloaded next track after reordering
-        # The controller needs to update what's preloaded since the order changed
         if self.controller:
             self.controller.refresh_preload()
-        
         return True
 
 # ============================================================================
@@ -1397,23 +987,18 @@ class AudioPlayerController:
     """Controller for gapless audio playback."""
 
     def __init__(self, view=None, eq_widget=None):
-        # Setup VLC environment (checks system VLC first, falls back to local plugins)
         plugins_dir = setup_vlc_environment()
         
-        # VLC options to suppress verbose warnings and errors
         vlc_options = [
-            '--quiet',                      # Suppress most messages
-            '--no-video-title-show',        # Don't show video title on playback
-            '--no-stats',                   # Disable statistics
-            '--no-snapshot-preview',        # Disable snapshot preview
-            '--ignore-config',              # Don't use VLC's config file
-            '--no-plugins-cache',           # Completely disable plugin cache (prevents stale cache errors)
-            '--verbose=0',                  # Set verbosity to minimum (0 = errors and warnings off)
+            '--quiet',
+            '--no-video-title-show',
+            '--no-stats',
+            '--no-snapshot-preview',
+            '--ignore-config',
+            '--no-plugins-cache',
+            '--verbose=0',
         ]
         
-        # Create VLC instance
-        # If plugins_dir is None, use system VLC (no custom plugin path)
-        # If plugins_dir is set, use local plugins with explicit path
         try:
             if plugins_dir:
                 vlc_options.append(f'--plugin-path={plugins_dir}')
@@ -1424,39 +1009,29 @@ class AudioPlayerController:
                 print("✓ VLC instance created using system installation")
         except Exception as e:
             print(f"❌ Failed to create VLC instance: {e}")
-            print("Please ensure VLC is installed on your system or provide local plugins.")
             raise
         
-        # Use gapless playback manager instead of single player
         self.gapless_manager = GaplessPlaybackManager(self.instance, eq_widget)
         self.gapless_manager.setup_events()
-        
-        # Connect signals for thread-safe updates
         self.gapless_manager.signals.track_changed.connect(self._on_gapless_track_change)
         self.gapless_manager.signals.start_equalizer.connect(self._start_equalizer)
         self.gapless_manager.signals.stop_equalizer.connect(self._stop_equalizer)
         
-        # Legacy compatibility - point to active player
         self.player = self.gapless_manager.player_a
-        
         self.current_index = -1
         self.model = None
         self.view = view
         self.eq_widget = eq_widget
 
     def _start_equalizer(self, filepath):
-        """Start equalizer for new track (slot for signal) - runs on main thread."""
         if self.eq_widget:
             self.eq_widget.start(filepath)
 
     def _stop_equalizer(self):
-        """Stop equalizer (slot for signal) - runs on main thread."""
         if self.eq_widget:
             self.eq_widget.timer.stop()
 
     def _on_gapless_track_change(self, filepath):
-        """Handle automatic track change from gapless transition (slot for signal)."""
-        # Reset the transition flag in the gapless manager when track actually changes
         self.gapless_manager._transition_triggered = False
         
         if self.model:
@@ -1464,8 +1039,6 @@ class AudioPlayerController:
                 if self.model.path_at(i) == filepath:
                     self.current_index = i
                     self.model.set_current_index(i)
-                    
-                    # Update player reference so icon checks the correct active player
                     self.player = self.gapless_manager.get_active_player()
                     
                     if self.view:
@@ -1473,7 +1046,6 @@ class AudioPlayerController:
                         self.view.selectRow(i)
                         self.view.viewport().update()
                     
-                    # Update UI
                     main_window = self.view.window()
                     if hasattr(main_window, "update_album_art"):
                         main_window.update_album_art(filepath)
@@ -1484,35 +1056,25 @@ class AudioPlayerController:
                         title = track.get("title", "Unknown Track")
                         main_window.setWindowTitle(f"{artist} - {title}")
                     
-                    # Update current track path in gapless manager
                     self.gapless_manager.current_track_path = filepath
-                    
-                    # CRITICAL: Preload next track for continuous gapless playback
-                    print(f"Track changed to index {i}, preloading next...")
                     self._preload_next()
                     
-                    # Update UI to show correct playback state and icon
                     if main_window:
                         main_window.update_playback_ui()
                         main_window.update_playpause_icon()
-                    
                     break
 
     def set_model(self, model):
-        """Set the playlist model."""
         self.model = model
 
     def set_view(self, view):
-        """Set the playlist view."""
         self.view = view
 
     def set_equalizer(self, eq_widget):
-        """Set the equalizer widget."""
         self.eq_widget = eq_widget
         self.gapless_manager.eq_widget = eq_widget
 
     def play_index(self, index):
-        """Play the track at the given index with gapless preloading."""
         if not self.model:
             return
         
@@ -1520,23 +1082,17 @@ class AudioPlayerController:
         if not path:
             return
         
-        # Get next track for preloading
         next_path = None
         if index + 1 < self.model.rowCount():
             next_path = self.model.path_at(index + 1)
         
-        # Use gapless manager
         self.gapless_manager.play_track(path, preload_next=next_path)
-        
         self.current_index = index
         self.model.set_current_index(index)
         
-        # CRITICAL: If this is the last track, clear preload state
         if next_path is None:
-            print(f"Playing last track (index {index}), clearing preload state...")
             self._preload_next()
         
-        # Update player reference for legacy code
         self.player = self.gapless_manager.get_active_player()
         
         if self.view:
@@ -1555,99 +1111,65 @@ class AudioPlayerController:
             main_window.setWindowTitle(f"{artist} - {title}")
 
     def _preload_next(self):
-        """Preload the next track in playlist."""
         if not self.model or self.current_index < 0:
-            print("Cannot preload: no model or invalid index")
             return
             
         next_index = self.current_index + 1
         if next_index < self.model.rowCount():
             next_path = self.model.path_at(next_index)
             if next_path:
-                print(f"Preloading track {next_index}: {os.path.basename(next_path)}")
-                # Run preload in background thread
                 threading.Thread(
                     target=self.gapless_manager._preload_next_track,
                     args=(next_path,),
                     daemon=True
                 ).start()
-            else:
-                print(f"No valid path for track {next_index}")
         else:
-            # No more tracks to preload - clear the preload state completely
-            print("!!! Reached last track - CLEARING ALL PRELOAD STATE !!!")
             with self.gapless_manager.preload_lock:
                 self.gapless_manager.next_track_path = None
-                # Stop the standby player and clear its media completely
                 if self.gapless_manager.standby_player:
-                    print(f"    Stopping and clearing standby player {'A' if self.gapless_manager.standby_player == self.gapless_manager.player_a else 'B'}")
                     self.gapless_manager.standby_player.stop()
-                    # Set to None/empty media to truly clear it
                     self.gapless_manager.standby_player.set_media(None)
-                print(f"    next_track_path is now: {self.gapless_manager.next_track_path}")
-                print(f"    Standby player media cleared")
 
     def refresh_preload(self):
-        """Refresh the preloaded next track after playlist reordering."""
-        print("!!! Playlist reordered - refreshing preload !!!")
-        
-        # Only refresh if we're currently playing something
         if self.current_index < 0 or not self.model:
-            print("    No active playback, skipping refresh")
             return
         
-        # Clear the old preload first
         with self.gapless_manager.preload_lock:
             old_preload = self.gapless_manager.next_track_path
             self.gapless_manager.next_track_path = None
-            
-            # Stop and clear the standby player
             if self.gapless_manager.standby_player:
                 self.gapless_manager.standby_player.stop()
                 self.gapless_manager.standby_player.set_media(None)
-                print(f"    Cleared old preload: {os.path.basename(old_preload) if old_preload else 'None'}")
         
-        # Preload the new next track based on current order
         self._preload_next()
 
     def pause(self):
-        """Pause playback."""
         self.gapless_manager.pause()
 
     def play(self):
-        """Resume playback or restart from current index."""
-        # Check if we're resuming from pause
         if (self.gapless_manager.current_track_path and 
             self.gapless_manager.active_player and 
             not self.gapless_manager.is_playing()):
-            # Resume paused playback
             self.gapless_manager.resume()
         elif self.current_index >= 0:
-            # Restart from current index after stop
             self.play_index(self.current_index)
-        else:
-            print("Cannot play: no track selected")
 
     def stop(self):
-        """Stop playback."""
         self.gapless_manager.stop()
 
     def next(self):
-        """Play the next track."""
         if self.model and self.current_index is not None:
             next_index = self.current_index + 1
             if next_index < self.model.rowCount():
                 self.play_index(next_index)
 
     def previous(self):
-        """Play the previous track."""
         if self.model and self.current_index is not None:
             prev_index = self.current_index - 1
             if prev_index >= 0:
                 self.play_index(prev_index)
 
     def set_volume(self, volume):
-        """Set the playback volume."""
         self.gapless_manager.set_volume(volume)
 
 # ============================================================================
@@ -1663,14 +1185,12 @@ class PlayingRowDelegate(QStyledItemDelegate):
         self.hover_row = -1
 
     def set_hover_row(self, row):
-        """Set the currently hovered row."""
         if self.hover_row != row:
             self.hover_row = row
             if self.parent():
                 self.parent().viewport().update()
 
     def paint(self, painter, option, index):
-        """Paint the delegate."""
         opt = QStyleOptionViewItem(option)
 
         if index.row() == self.model.current_index and self.model.highlight_color:
@@ -1691,19 +1211,14 @@ class PlayingRowDelegate(QStyledItemDelegate):
 
         if index.row() == self.hover_row:
             painter.save()
-            # Use theme-aware hover color
-            from PySide6.QtWidgets import QApplication
-            from PySide6.QtGui import QPalette as QtPalette
             app = QApplication.instance()
             if app:
                 app_palette = app.palette()
-                base_color = app_palette.color(QtPalette.Base)
+                base_color = app_palette.color(QPalette.Base)
                 if is_dark_color(base_color):
-                    # Dark theme - lighter semi-transparent overlay
                     hover_color = QColor(base_color.lighter(130))
                     hover_color.setAlpha(100)
                 else:
-                    # Light theme - blue semi-transparent overlay
                     hover_color = QColor(220, 238, 255, 100)
             else:
                 hover_color = QColor(220, 238, 255, 100)
@@ -1728,21 +1243,13 @@ class DirectoryBrowserDelegate(QStyledItemDelegate):
         self.highlight_color = None
     
     def paint(self, painter, option, index):
-        """Paint the delegate."""
         opt = QStyleOptionViewItem(option)
         
-        # Check if this is a file (not a directory) by checking if it has children
         model = index.model()
         is_directory = model.isDir(index)
         
-        # If it's a file (not a directory), reduce indentation by one level
-        # so files align with their parent folder instead of being indented further
         if not is_directory and self.tree_view:
-            # Get the indentation amount
             indentation = self.tree_view.indentation()
-            
-            # Shift the rect left by one indentation level
-            # This makes files align with their parent folder
             opt.rect.adjust(-indentation, 0, 0, 0)
 
         if (option.state & QStyle.State_Selected) and self.highlight_color:
@@ -1762,7 +1269,6 @@ class DirectoryBrowserDelegate(QStyledItemDelegate):
         super().paint(painter, opt, index)
     
     def set_highlight_color(self, color):
-        """Update the highlight color."""
         self.highlight_color = color
         if self.tree_view:
             self.tree_view.viewport().update()
@@ -1781,41 +1287,34 @@ class AlbumArtLabel(QLabel):
         self.setMinimumSize(100, 100)
         self._original_pixmap = None
         self._scaled_pixmap = None
-        self.border_radius = 8  # Rounded corner radius
+        self.border_radius = 8
 
     def set_album_pixmap(self, pixmap: QPixmap):
-        """Set the album art pixmap."""
         self._original_pixmap = pixmap
         self._update_scaled_pixmap()
 
     def resizeEvent(self, event):
-        """Handle resize events."""
         super().resizeEvent(event)
         self._update_scaled_pixmap()
 
     def _update_scaled_pixmap(self):
-        """Update the scaled pixmap with rounded corners."""
         if self._original_pixmap:
             target_size = self.size().boundedTo(self._original_pixmap.size())
             scaled = self._original_pixmap.scaled(
                 target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
             self._scaled_pixmap = scaled
-            self.update()  # Trigger paintEvent
+            self.update()
     
     def paintEvent(self, event):
-        """Custom paint to draw rounded corners on the image."""
         if self._scaled_pixmap:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             
-            # Calculate position to center the image
             x = (self.width() - self._scaled_pixmap.width()) // 2
             y = (self.height() - self._scaled_pixmap.height()) // 2
             
-            # Create a rounded rect path for clipping
-            from PySide6.QtGui import QPainterPath
             path = QPainterPath()
             path.addRoundedRect(
                 x, y, 
@@ -1825,59 +1324,47 @@ class AlbumArtLabel(QLabel):
                 self.border_radius
             )
             
-            # Clip to rounded rect and draw the image
             painter.setClipPath(path)
             painter.drawPixmap(x, y, self._scaled_pixmap)
         else:
-            # No image - use default paint (shows background)
             super().paintEvent(event)
 
 class DirectoryTreeView(QTreeView):
-    """QTreeView with drag support for files and folders and context menu."""
+    """QTreeView with drag support and context menu."""
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setDragEnabled(True)
         self.setDragDropMode(QAbstractItemView.DragOnly)
-        self.setSelectionMode(QAbstractItemView.ExtendedSelection)  # Enable multi-selection
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
-        self.playlist_model = None  # Will be set by MainWindow
+        self.playlist_model = None
     
     def showEvent(self, event):
-        """Apply rounded corner mask when shown."""
         super().showEvent(event)
         self._apply_rounded_mask()
     
     def resizeEvent(self, event):
-        """Reapply mask on resize."""
         super().resizeEvent(event)
         self._apply_rounded_mask()
     
     def _apply_rounded_mask(self):
-        """Apply a rounded rectangle mask to create rounded corners."""
-        from PySide6.QtGui import QRegion, QPainterPath
-        from PySide6.QtCore import QRectF
-        
         path = QPainterPath()
         path.addRoundedRect(QRectF(self.rect()), 8, 8)
         region = QRegion(path.toFillPolygon().toPolygon())
         self.setMask(region)
     
     def _show_context_menu(self, position):
-        """Show context menu for file/folder operations."""
         index = self.indexAt(position)
         if not index.isValid():
             return
         
         model = self.model()
-        
-        # Get all selected items (support multi-selection)
         selected_indexes = self.selectedIndexes()
         if not selected_indexes:
             return
         
-        # Determine if selection contains files, folders, or both
         has_files = False
         has_folders = False
         
@@ -1889,14 +1376,10 @@ class DirectoryTreeView(QTreeView):
                 if ext in SUPPORTED_EXTENSIONS:
                     has_files = True
         
-        # Only show menu if we have valid audio files or folders
         if not (has_files or has_folders):
             return
         
-        from PySide6.QtWidgets import QMenu
         menu = QMenu(self)
-        
-        # Add context menu actions
         play_next_action = menu.addAction("Play Next")
         add_to_playlist_action = menu.addAction("Add to Playlist")
         menu.addSeparator()
@@ -1911,18 +1394,7 @@ class DirectoryTreeView(QTreeView):
         elif action == overwrite_playlist_action:
             self._overwrite_playlist_with_selected()
     
-    def _add_file_play_next(self, file_path):
-        """Add a single file to play next in the playlist."""
-        if self.playlist_model:
-            # Get controller from playlist model
-            controller = self.playlist_model.controller
-            if controller and controller.model:
-                # Insert after current playing track
-                insert_pos = controller.current_index + 1 if controller.current_index >= 0 else 0
-                self._insert_files_at_position([file_path], insert_pos)
-    
     def _add_selected_play_next(self):
-        """Add all selected items to play next in the playlist."""
         paths = self._get_paths_from_selection()
         if paths and self.playlist_model:
             controller = self.playlist_model.controller
@@ -1931,70 +1403,49 @@ class DirectoryTreeView(QTreeView):
                 self._insert_files_at_position(paths, insert_pos)
     
     def _add_selected_to_playlist(self):
-        """Add all selected items to the end of the playlist."""
         paths = self._get_paths_from_selection()
         if paths and self.playlist_model:
             self.playlist_model.add_tracks(paths, clear=False)
     
     def _overwrite_playlist_with_selected(self):
-        """Replace playlist with selected items and start playback."""
         paths = self._get_paths_from_selection()
         if paths and self.playlist_model:
             controller = self.playlist_model.controller
-            
-            # Stop current playback
             if controller:
                 controller.stop()
-            
-            # Clear and add tracks
             self.playlist_model.add_tracks(paths, clear=True)
-            
-            # Start playing first track with a slight delay to ensure stop is processed
             if controller and len(paths) > 0:
-                # Use QTimer to defer playback start, ensuring stop signal is fully processed
-                from PySide6.QtCore import QTimer
                 QTimer.singleShot(50, lambda: self._start_playback_after_overwrite(controller))
-                print(f"Replaced playlist with {len(paths)} track(s), starting playback...")
     
     def _start_playback_after_overwrite(self, controller):
-        """Start playback after playlist overwrite (called via QTimer)."""
         if controller and controller.model and controller.model.rowCount() > 0:
             controller.play_index(0)
-            print("Playback started after overwrite")
     
     def _get_paths_from_selection(self):
-        """Get all audio file paths from selected items (files and folders)."""
         model = self.model()
         selected_indexes = self.selectedIndexes()
-        
         paths = []
-        processed_paths = set()  # Avoid duplicates
+        processed_paths = set()
         
         for index in selected_indexes:
             if not index.isValid():
                 continue
             
             file_path = model.filePath(index)
-            
-            # Skip if already processed (for multi-column selection)
             if file_path in processed_paths:
                 continue
             processed_paths.add(file_path)
             
             if model.isDir(index):
-                # It's a folder - get all audio files recursively
                 folder_paths = self._get_audio_files_from_folder(file_path)
                 paths.extend(folder_paths)
             else:
-                # It's a file - check if it's an audio file
                 ext = os.path.splitext(file_path)[1].lower()
                 if ext in SUPPORTED_EXTENSIONS:
                     paths.append(file_path)
-        
         return paths
     
     def _get_audio_files_from_folder(self, folder_path):
-        """Recursively get all audio files from a folder."""
         paths = []
         for root, dirs, files in os.walk(folder_path):
             for file in sorted(files):
@@ -2004,11 +1455,9 @@ class DirectoryTreeView(QTreeView):
         return paths
     
     def _insert_files_at_position(self, paths, position):
-        """Insert files at a specific position in the playlist."""
         if not self.playlist_model or not paths:
             return
         
-        # Extract metadata for all files
         new_items = [
             extract_metadata(path, i)
             for i, path in enumerate(paths, start=1)
@@ -2018,33 +1467,25 @@ class DirectoryTreeView(QTreeView):
         if not new_items:
             return
         
-        # Ensure position is valid
         position = max(0, min(position, self.playlist_model.rowCount()))
         
-        # Insert tracks
         self.playlist_model.beginInsertRows(QModelIndex(), position, position + len(new_items) - 1)
         for i, item in enumerate(new_items):
             self.playlist_model._tracks.insert(position + i, item)
         self.playlist_model.endInsertRows()
         
-        # Update current_index if needed
         if self.playlist_model.current_index >= position:
             self.playlist_model.current_index += len(new_items)
         
-        # Refresh preload if currently playing
         if self.playlist_model.controller:
             self.playlist_model.controller.refresh_preload()
-        
-        print(f"Inserted {len(new_items)} track(s) at position {position}")
     
     def mousePressEvent(self, event):
-        """Handle mouse press for drag initiation."""
         if event.button() == Qt.LeftButton:
             self.drag_start_position = event.position().toPoint()
         super().mousePressEvent(event)
     
     def mouseMoveEvent(self, event):
-        """Handle mouse move for drag and drop."""
         if not (event.buttons() & Qt.LeftButton):
             super().mouseMoveEvent(event)
             return
@@ -2053,51 +1494,35 @@ class DirectoryTreeView(QTreeView):
             super().mouseMoveEvent(event)
             return
         
-        from PySide6.QtCore import QMimeData, QUrl
-        from PySide6.QtGui import QDrag
-        
-        # Check if we've moved far enough to start a drag
         if (event.position().toPoint() - self.drag_start_position).manhattanLength() < QApplication.startDragDistance():
             super().mouseMoveEvent(event)
             return
         
-        # Get all selected indexes
         selected_indexes = self.selectedIndexes()
         if not selected_indexes:
             super().mouseMoveEvent(event)
             return
         
         model = self.model()
-        
-        # Collect all file paths from selected items, maintaining selection order
         urls = []
         for index in selected_indexes:
             if index.isValid():
                 file_path = model.filePath(index)
-                # Only add files (not directories) or handle directories separately
-                if os.path.isfile(file_path):
-                    urls.append(QUrl.fromLocalFile(file_path))
-                elif os.path.isdir(file_path):
-                    # For directories, add the directory itself
+                if os.path.isfile(file_path) or os.path.isdir(file_path):
                     urls.append(QUrl.fromLocalFile(file_path))
         
         if not urls:
             super().mouseMoveEvent(event)
             return
         
-        # Create drag object
         drag = QDrag(self)
         mime_data = QMimeData()
-        
-        # Add all selected file URLs to mime data
         mime_data.setUrls(urls)
         drag.setMimeData(mime_data)
-        
-        # Execute drag
         drag.exec(Qt.CopyAction)
 
 class PlaylistView(QTableView):
-    """QTableView with watermark, row-wide hover support, drag-and-drop, and context menu."""
+    """QTableView with watermark, hover support, and drag-and-drop."""
 
     def __init__(self, logo_path=None, parent=None):
         super().__init__(parent)
@@ -2106,134 +1531,115 @@ class PlaylistView(QTableView):
         self.logo = QPixmap(logo_path)
         self.setMouseTracking(True)
         
-        # Enable drag and drop - both internal reordering and external drops
         self.setAcceptDrops(True)
         self.setDragEnabled(True)
         self.setDragDropMode(QAbstractItemView.DragDrop)
         self.setDefaultDropAction(Qt.MoveAction)
         self.setDragDropOverwriteMode(False)
-        
-        # Enable multi-selection with standard OS behavior
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        
-        # Enable context menu
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
         
-        # Track for drag selection
         self._drag_selecting = False
         self._drag_start_row = -1
     
     def showEvent(self, event):
-        """Apply rounded corner mask when shown."""
         super().showEvent(event)
         self._apply_rounded_mask()
     
     def resizeEvent(self, event):
-        """Reapply mask on resize."""
         super().resizeEvent(event)
         self._apply_rounded_mask()
     
     def _apply_rounded_mask(self):
-        """Apply a rounded rectangle mask to create rounded corners."""
-        from PySide6.QtGui import QRegion, QPainterPath
-        from PySide6.QtCore import QRectF
-        
         path = QPainterPath()
         path.addRoundedRect(QRectF(self.rect()), 8, 8)
         region = QRegion(path.toFillPolygon().toPolygon())
         self.setMask(region)
     
     def _show_context_menu(self, position):
-        """Show context menu for playlist operations."""
-        # Get selected rows
         selected_rows = sorted(set(index.row() for index in self.selectedIndexes()))
-        
         if not selected_rows:
             return
         
-        from PySide6.QtWidgets import QMenu
         menu = QMenu(self)
-        
-        # Add remove action
         if len(selected_rows) == 1:
             remove_action = menu.addAction("Remove from Playlist")
         else:
             remove_action = menu.addAction(f"Remove {len(selected_rows)} Tracks from Playlist")
         
         action = menu.exec(self.viewport().mapToGlobal(position))
-        
         if action == remove_action:
             self._remove_selected_tracks(selected_rows)
     
     def _remove_selected_tracks(self, rows):
-        """Remove selected tracks from the playlist."""
         model = self.model()
         if not model or not rows:
             return
         
-        # Remove in reverse order to maintain indices
         for row in reversed(rows):
             if 0 <= row < model.rowCount():
                 model.beginRemoveRows(QModelIndex(), row, row)
                 model._tracks.pop(row)
                 
-                # Update current_index if needed
                 if model.current_index == row:
-                    # Removed the currently playing track - stop playback
                     if model.controller:
                         model.controller.stop()
                     model.current_index = -1
                 elif model.current_index > row:
-                    # Playing track shifted down
                     model.current_index -= 1
                 
                 model.endRemoveRows()
         
-        # Refresh preload after removal
         if model.controller:
             model.controller.refresh_preload()
-        
-        print(f"Removed {len(rows)} track(s) from playlist")
 
     def mousePressEvent(self, event):
-        """Handle mouse press for drag selection."""
         if event.button() == Qt.LeftButton:
             index = self.indexAt(event.position().toPoint())
             if index.isValid():
-                # Check if Ctrl or Shift is held (standard multi-select)
                 modifiers = event.modifiers()
                 if modifiers & (Qt.ControlModifier | Qt.ShiftModifier):
                     # Let default handler manage Ctrl/Shift selection
                     super().mousePressEvent(event)
+                    return
                 else:
-                    # Start drag selection
-                    self._drag_selecting = True
-                    self._drag_start_row = index.row()
-                    # Clear current selection and select this row
-                    self.clearSelection()
-                    self.selectRow(index.row())
+                    row = index.row()
+                    # Check if this row is already selected - toggle if so
+                    if self.selectionModel().isRowSelected(row, QModelIndex()):
+                        # Row is selected - deselect it (don't call super to avoid re-selection)
+                        self.clearSelection()
+                        return
+                    else:
+                        # Row is not selected - select it
+                        self._drag_selecting = True
+                        self._drag_start_row = row
+                        self.clearSelection()
+                        self.selectRow(row)
+                        # Fall through to call super() for double-click detection
             else:
                 # Clicked on empty area - clear selection
                 self.clearSelection()
-                super().mousePressEvent(event)
-        else:
-            super().mousePressEvent(event)
+                return
+        
+        # Call parent to let Qt track double-clicks properly
+        super().mousePressEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_selecting = False
+            self._drag_start_row = -1
+        super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event):
-        """Handle mouse move events for hover tracking and drag selection."""
         index = self.indexAt(event.position().toPoint())
-        
-        # Update hover for delegate
         delegate = self.itemDelegate()
         if hasattr(delegate, "set_hover_row"):
             delegate.set_hover_row(index.row() if index.isValid() else -1)
         
-        # Handle drag selection
         if self._drag_selecting and index.isValid():
             current_row = index.row()
             if current_row != self._drag_start_row:
-                # Select range from start to current
                 self.clearSelection()
                 start = min(self._drag_start_row, current_row)
                 end = max(self._drag_start_row, current_row)
@@ -2241,79 +1647,56 @@ class PlaylistView(QTableView):
                     self.selectRow(row)
         
         super().mouseMoveEvent(event)
-    
-    def mouseReleaseEvent(self, event):
-        """Handle mouse release to end drag selection."""
-        if event.button() == Qt.LeftButton:
-            self._drag_selecting = False
-            self._drag_start_row = -1
-        super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event):
-        """Handle mouse leave events."""
         delegate = self.itemDelegate()
         if hasattr(delegate, "set_hover_row"):
             delegate.set_hover_row(-1)
         super().leaveEvent(event)
     
     def dragEnterEvent(self, event):
-        """Handle drag enter events."""
-        # Accept both internal drags and external file drops
         if event.mimeData().hasFormat('application/x-playlist-track-index') or event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             event.ignore()
     
     def dragMoveEvent(self, event):
-        """Handle drag move events."""
-        # Accept both internal drags and external file drops
         if event.mimeData().hasFormat('application/x-playlist-track-index') or event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             event.ignore()
     
     def dropEvent(self, event):
-        """Handle drop events - reorder tracks or add files/folders to playlist."""
         mime_data = event.mimeData()
         
-        # Check if this is an internal reorder (model handles this)
         if mime_data.hasFormat('application/x-playlist-track-index'):
-            # Let the default handler process internal moves
             super().dropEvent(event)
             return
         
-        # Handle external file drops
         if not mime_data.hasUrls():
             event.ignore()
             return
         
-        # Collect all audio file paths from dropped items
         paths = []
         for url in mime_data.urls():
             path = url.toLocalFile()
             if os.path.isfile(path):
-                # Single file - check if it's an audio file
                 if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
                     paths.append(path)
             elif os.path.isdir(path):
-                # Directory - recursively find all audio files
                 for root, dirs, files in os.walk(path):
                     for file in sorted(files):
                         file_path = os.path.join(root, file)
                         if os.path.splitext(file_path)[1].lower() in SUPPORTED_EXTENSIONS:
                             paths.append(file_path)
         
-        # Add tracks to playlist (append mode - clear=False)
         if paths:
             model = self.model()
             if model:
                 model.add_tracks(paths, clear=False)
-                print(f"Added {len(paths)} track(s) to playlist")
-        
         event.acceptProposedAction()
         
     def viewportEvent(self, event):
-        """Handle viewport events for watermark drawing."""
         if event.type() == QEvent.Paint and not self.logo.isNull():
             painter = QPainter(self.viewport())
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
@@ -2344,12 +1727,10 @@ class PeakTransparencyDialog(QWidget):
         
         layout = QVBoxLayout(self)
         
-        # Title label
         title = QLabel("Adjust Peak Indicator Transparency")
         title.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px;")
         layout.addWidget(title)
         
-        # Slider with labels
         slider_layout = QHBoxLayout()
         
         self.label_transparent = QLabel("Transparent")
@@ -2385,16 +1766,13 @@ class PeakTransparencyDialog(QWidget):
         self.label_opaque = QLabel("Opaque")
         self.label_opaque.setStyleSheet("color: #666;")
         slider_layout.addWidget(self.label_opaque)
-        
         layout.addLayout(slider_layout)
         
-        # Current value display
         self.value_label = QLabel(f"Current: {int((current_alpha / 255) * 100)}%")
         self.value_label.setAlignment(Qt.AlignCenter)
         self.value_label.setStyleSheet("font-size: 12px; color: #555; padding: 10px;")
         layout.addWidget(self.value_label)
         
-        # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
         
@@ -2405,19 +1783,16 @@ class PeakTransparencyDialog(QWidget):
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.close)
         button_layout.addWidget(close_btn)
-        
         layout.addLayout(button_layout)
     
     def _on_slider_changed(self, value):
-        """Handle slider value change."""
         percentage = int((value / 255) * 100)
         self.value_label.setText(f"Current: {percentage}%")
         self.transparency_changed.emit(value)
     
     def _reset_to_default(self):
-        """Reset to default transparency (fully opaque)."""
         self.slider.setValue(255)
-        
+
 class FontSelectionDialog(QWidget):
     """Dialog for selecting font family and size."""
     
@@ -2431,30 +1806,25 @@ class FontSelectionDialog(QWidget):
         
         if current_font is None:
             current_font = QFont()
-        
         self.current_font = QFont(current_font)
         
         layout = QVBoxLayout(self)
         
-        # Title label
         title_label = QLabel(f"{title}")
         title_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px;")
         layout.addWidget(title_label)
         
-        # Font family selection
         family_layout = QHBoxLayout()
         family_label = QLabel("Font Family:")
         family_label.setStyleSheet("color: #555; font-weight: bold;")
         family_layout.addWidget(family_label)
         
-        from PySide6.QtWidgets import QFontComboBox
         self.font_combo = QFontComboBox()
         self.font_combo.setCurrentFont(self.current_font)
         self.font_combo.currentFontChanged.connect(self._on_font_changed)
         family_layout.addWidget(self.font_combo, 1)
         layout.addLayout(family_layout)
         
-        # Font size selection
         size_layout = QHBoxLayout()
         size_label = QLabel("Font Size:")
         size_label.setStyleSheet("color: #555; font-weight: bold;")
@@ -2489,7 +1859,6 @@ class FontSelectionDialog(QWidget):
         size_layout.addWidget(self.size_label)
         layout.addLayout(size_layout)
         
-        # Preview
         preview_group = QWidget()
         preview_group.setStyleSheet("background: white; border: 1px solid #ccc; border-radius: 4px;")
         preview_layout = QVBoxLayout(preview_group)
@@ -2502,10 +1871,8 @@ class FontSelectionDialog(QWidget):
         self.preview_label.setFont(self.current_font)
         self.preview_label.setStyleSheet("padding: 10px;")
         preview_layout.addWidget(self.preview_label)
-        
         layout.addWidget(preview_group)
         
-        # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
         
@@ -2520,41 +1887,31 @@ class FontSelectionDialog(QWidget):
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.close)
         button_layout.addWidget(close_btn)
-        
         layout.addLayout(button_layout)
     
     def _on_font_changed(self, font):
-        """Handle font family change."""
         self.current_font.setFamily(font.family())
         self._update_preview()
     
     def _on_size_changed(self, size):
-        """Handle font size change."""
         self.current_font.setPointSize(size)
         self.size_label.setText(f"{size} pt")
         self._update_preview()
     
     def _update_preview(self):
-        """Update the preview label."""
         self.preview_label.setFont(self.current_font)
     
     def _apply_font(self):
-        """Apply the selected font."""
         self.font_changed.emit(self.current_font)
     
     def _reset_to_default(self):
-        """Reset to default system font."""
         default_font = QFont()
         self.font_combo.setCurrentFont(default_font)
         self.size_slider.setValue(default_font.pointSize())
-                
+
 # ============================================================================
 # GLOBAL MEDIA KEY HANDLER
 # ============================================================================
-
-if sys.platform == 'win32':
-    from ctypes import wintypes
-    import ctypes.wintypes
 
 class GlobalMediaKeyHandler(QAbstractNativeEventFilter):
     """Cross-platform global media key handler."""
@@ -2566,16 +1923,14 @@ class GlobalMediaKeyHandler(QAbstractNativeEventFilter):
         self.setup_platform_handler()
     
     def setup_platform_handler(self):
-        """Setup platform-specific media key handling."""
         if sys.platform == 'win32':
             self._setup_windows_handler()
         elif sys.platform == 'darwin':
-            self._setup_macos_handler()
+            print("macOS media key support requires additional configuration")
         else:
-            self._setup_linux_handler()
+            print("Linux media key support via MPRIS not fully implemented")
     
     def _setup_windows_handler(self):
-        """Setup Windows media key handling using RegisterHotKey."""
         try:
             self.hwnd = int(self.main_window.winId())
             
@@ -2599,24 +1954,11 @@ class GlobalMediaKeyHandler(QAbstractNativeEventFilter):
             if result1 and result2 and result3 and result4:
                 print("Windows global media keys registered successfully")
             else:
-                print("Some media keys could not be registered (may be in use by another application)")
-            
+                print("Some media keys could not be registered")
         except Exception as e:
             print(f"Failed to setup Windows media keys: {e}")
-            print("Falling back to application-level shortcuts")
-    
-    def _setup_macos_handler(self):
-        """Setup macOS media key handling."""
-        print("macOS media key support requires additional configuration")
-        print("Using application-level shortcuts instead")
-    
-    def _setup_linux_handler(self):
-        """Setup Linux media key handling using DBus (MPRIS)."""
-        print("Linux media key support via MPRIS not fully implemented")
-        print("Using application-level shortcuts instead")
     
     def nativeEventFilter(self, eventType, message):
-        """Handle native events for Windows."""
         if sys.platform == 'win32':
             try:
                 WM_HOTKEY = 0x0312
@@ -2643,7 +1985,6 @@ class GlobalMediaKeyHandler(QAbstractNativeEventFilter):
         return False, 0
     
     def cleanup(self):
-        """Cleanup registered hotkeys."""
         if sys.platform == 'win32' and self.hwnd:
             try:
                 user32 = ctypes.windll.user32
@@ -2656,7 +1997,7 @@ class GlobalMediaKeyHandler(QAbstractNativeEventFilter):
                 print(f"Error unregistering hotkeys: {e}")
 
 # ============================================================================
-# MAIN WINDOW - PART 1: Class Definition and Styles
+# MAIN WINDOW
 # ============================================================================
 
 class MainWindow(QMainWindow):
@@ -2665,12 +2006,8 @@ class MainWindow(QMainWindow):
     @staticmethod
     def get_tree_style(highlight_color, highlight_text_color):
         """Generate theme-aware tree view stylesheet."""
-        from PySide6.QtWidgets import QApplication
-        from PySide6.QtGui import QPalette
-        
         app = QApplication.instance()
         if not app:
-            # Default to light theme - match playlist colors
             return f"""
                 QTreeView {{
                     background-color: rgba(255, 255, 255, 150);
@@ -2679,70 +2016,11 @@ class MainWindow(QMainWindow):
                     border-radius: 8px;
                     color: #000000;
                 }}
-                QTreeView::viewport {{
-                    border: none;
-                    border-radius: 8px;
-                    background: transparent;
-                }}
-                QTreeView::item {{
-                    padding: 0px 4px;
-                    min-height: 12px;
-                    border: none;
-                    outline: none;
-                    color: #000000;
-                }}
-                QTreeView::item:hover {{
-                    background: #dceeff;
-                    color: black;
-                    border: none;
-                    outline: none;
-                    border-radius: 0px;
-                }}
-                QTreeView::item:selected {{
-                    background: {highlight_color};
-                    color: {highlight_text_color};
-                    border: 1px solid transparent;
-                    outline: transparent;
-                    border-radius: 0px;
-                }}
-                QTreeView::item:selected:hover,
-                QTreeView::item:selected:active,
-                QTreeView::item:selected:!active,
-                QTreeView::item:selected:pressed {{
-                    background: {highlight_color};
-                    color: {highlight_text_color};
-                    border: 1px solid transparent;
-                    outline: transparent;
-                    border-radius: 0px;
-                }}
-                QTreeView::item:focus {{
-                    border: 1px solid transparent;
-                    outline: transparent;
-                }}
-                QTreeView::branch {{
-                    background: transparent;
-                    width: 0px;
-                    border: none;
-                }}
-                QTreeView::branch:has-siblings:!adjoins-item,
-                QTreeView::branch:has-siblings:adjoins-item,
-                QTreeView::branch:!has-children:!has-siblings:adjoins-item {{
-                    border-image: none;
-                    image: none;
-                    width: 0px;
-                }}
-                QTreeView::branch:has-children:!has-siblings:closed,
-                QTreeView::branch:closed:has-children:has-siblings {{
-                    border-image: none;
-                    image: none;
-                    width: 0px;
-                }}
-                QTreeView::branch:open:has-children:!has-siblings,
-                QTreeView::branch:open:has-children:has-siblings {{
-                    border-image: none;
-                    image: none;
-                    width: 0px;
-                }}
+                QTreeView::viewport {{ border: none; border-radius: 8px; background: transparent; }}
+                QTreeView::item {{ padding: 0px 4px; min-height: 12px; border: none; outline: none; }}
+                QTreeView::item:hover {{ background: #dceeff; color: black; }}
+                QTreeView::item:selected {{ background: {highlight_color}; color: {highlight_text_color}; }}
+                QTreeView::branch {{ background: transparent; width: 0px; border: none; }}
             """
         
         palette = app.palette()
@@ -2752,12 +2030,10 @@ class MainWindow(QMainWindow):
         
         if is_dark:
             hover_bg = base_color.lighter(120).name()
-            # Match playlist - semi-transparent with lighter(110)
             alternate_bg = f"rgba({base_color.lighter(110).red()}, {base_color.lighter(110).green()}, {base_color.lighter(110).blue()}, 150)"
             bg = f"rgba({base_color.red()}, {base_color.green()}, {base_color.blue()}, 150)"
         else:
             hover_bg = "#dceeff"
-            # Match playlist - semi-transparent light colors
             alternate_bg = "rgba(240, 240, 240, 150)"
             bg = "rgba(255, 255, 255, 150)"
         
@@ -2769,81 +2045,18 @@ class MainWindow(QMainWindow):
                 border-radius: 8px;
                 color: {text_color.name()};
             }}
-            QTreeView::viewport {{
-                border: none;
-                border-radius: 8px;
-                background: transparent;
-            }}
-            QTreeView::item {{
-                padding: 0px 4px;
-                min-height: 12px;
-                border: none;
-                outline: none;
-                color: {text_color.name()};
-            }}
-            QTreeView::item:hover {{
-                background: {hover_bg};
-                color: {text_color.name()};
-                border: none;
-                outline: none;
-                border-radius: 0px;
-            }}
-            QTreeView::item:selected {{
-                background: {highlight_color};
-                color: {highlight_text_color};
-                border: 1px solid transparent;
-                outline: transparent;
-                border-radius: 0px;
-            }}
-            QTreeView::item:selected:hover,
-            QTreeView::item:selected:active,
-            QTreeView::item:selected:!active,
-            QTreeView::item:selected:pressed {{
-                background: {highlight_color};
-                color: {highlight_text_color};
-                border: 1px solid transparent;
-                outline: transparent;
-                border-radius: 0px;
-            }}
-            QTreeView::item:focus {{
-                border: 1px solid transparent;
-                outline: transparent;
-            }}
-            QTreeView::branch {{
-                background: transparent;
-                width: 0px;
-                border: none;
-            }}
-            QTreeView::branch:has-siblings:!adjoins-item,
-            QTreeView::branch:has-siblings:adjoins-item,
-            QTreeView::branch:!has-children:!has-siblings:adjoins-item {{
-                border-image: none;
-                image: none;
-                width: 0px;
-            }}
-            QTreeView::branch:has-children:!has-siblings:closed,
-            QTreeView::branch:closed:has-children:has-siblings {{
-                border-image: none;
-                image: none;
-                width: 0px;
-            }}
-            QTreeView::branch:open:has-children:!has-siblings,
-            QTreeView::branch:open:has-children:has-siblings {{
-                border-image: none;
-                image: none;
-                width: 0px;
-            }}
+            QTreeView::viewport {{ border: none; border-radius: 8px; background: transparent; }}
+            QTreeView::item {{ padding: 0px 4px; min-height: 12px; border: none; outline: none; }}
+            QTreeView::item:hover {{ background: {hover_bg}; }}
+            QTreeView::item:selected {{ background: {highlight_color}; color: {highlight_text_color}; }}
+            QTreeView::branch {{ background: transparent; width: 0px; border: none; }}
         """
 
     @staticmethod
     def get_button_style():
         """Generate theme-aware button stylesheet."""
-        from PySide6.QtWidgets import QApplication
-        from PySide6.QtGui import QPalette
-        
         app = QApplication.instance()
         if not app:
-            # Default to light theme
             return """
                 QPushButton {
                     background-color: #f0f0f0;
@@ -2860,7 +2073,6 @@ class MainWindow(QMainWindow):
         base_color = palette.color(QPalette.Base)
         is_dark = is_dark_color(base_color)
         
-        # Create more noticeable hover effect
         if is_dark:
             hover_color = button_color.lighter(130)
             pressed_color = button_color.darker(120)
@@ -2882,12 +2094,8 @@ class MainWindow(QMainWindow):
     @staticmethod
     def get_slider_style():
         """Generate theme-aware slider stylesheet."""
-        from PySide6.QtWidgets import QApplication
-        from PySide6.QtGui import QPalette
-        
         app = QApplication.instance()
         if not app:
-            # Default to light theme
             return """
                 QSlider::groove:horizontal {
                     border: 1px solid #bbb;
@@ -2956,12 +2164,8 @@ class MainWindow(QMainWindow):
     @staticmethod
     def get_playlist_style():
         """Generate theme-aware playlist stylesheet."""
-        from PySide6.QtWidgets import QApplication
-        from PySide6.QtGui import QPalette
-        
         app = QApplication.instance()
         if not app:
-            # Default to light theme
             return """
                 QTableView {
                     background-color: rgba(255, 255, 255, 150);
@@ -2973,27 +2177,9 @@ class MainWindow(QMainWindow):
                     selection-color: inherit;
                     outline: none;
                 }
-                QTableView::viewport {
-                    border: none;
-                    border-radius: 8px;
-                    background: transparent;
-                }
-                QTableView::item {
-                    background-color: transparent;
-                    padding: 4px 6px;
-                    border: none;
-                    outline: none;
-                }
-                QTableView::item:selected {
-                    background: transparent;
-                    color: inherit;
-                    border: none;
-                    outline: none;
-                }
-                QTableView::item:focus {
-                    border: none;
-                    outline: none;
-                }
+                QTableView::viewport { border: none; border-radius: 8px; background: transparent; }
+                QTableView::item { background-color: transparent; padding: 4px 6px; border: none; outline: none; }
+                QTableView::item:selected { background: transparent; color: inherit; }
             """
         
         palette = app.palette()
@@ -3001,7 +2187,6 @@ class MainWindow(QMainWindow):
         is_dark = is_dark_color(base_color)
         
         if is_dark:
-            # Dark theme - semi-transparent dark backgrounds
             return f"""
                 QTableView {{
                     background-color: rgba({base_color.red()}, {base_color.green()}, {base_color.blue()}, 150);
@@ -3014,31 +2199,11 @@ class MainWindow(QMainWindow):
                     outline: none;
                     color: palette(text);
                 }}
-                QTableView::viewport {{
-                    border: none;
-                    border-radius: 8px;
-                    background: transparent;
-                }}
-                QTableView::item {{
-                    background-color: transparent;
-                    padding: 4px 6px;
-                    border: none;
-                    outline: none;
-                    color: palette(text);
-                }}
-                QTableView::item:selected {{
-                    background: transparent;
-                    color: inherit;
-                    border: none;
-                    outline: none;
-                }}
-                QTableView::item:focus {{
-                    border: none;
-                    outline: none;
-                }}
+                QTableView::viewport {{ border: none; border-radius: 8px; background: transparent; }}
+                QTableView::item {{ background-color: transparent; padding: 4px 6px; border: none; outline: none; }}
+                QTableView::item:selected {{ background: transparent; color: inherit; }}
             """
         else:
-            # Light theme - semi-transparent light backgrounds
             return """
                 QTableView {
                     background-color: rgba(255, 255, 255, 150);
@@ -3050,22 +2215,9 @@ class MainWindow(QMainWindow):
                     selection-color: inherit;
                     outline: none;
                 }
-                QTableView::item {
-                    background-color: transparent;
-                    padding: 4px 6px;
-                    border: none;
-                    outline: none;
-                }
-                QTableView::item:selected {
-                    background: transparent;
-                    color: inherit;
-                    border: none;
-                    outline: none;
-                }
-                QTableView::item:focus {
-                    border: none;
-                    outline: none;
-                }
+                QTableView::viewport { border: none; border-radius: 8px; background: transparent; }
+                QTableView::item { background-color: transparent; padding: 4px 6px; border: none; outline: none; }
+                QTableView::item:selected { background: transparent; color: inherit; }
             """
 
     def __init__(self):
@@ -3074,7 +2226,6 @@ class MainWindow(QMainWindow):
         self.resize(1100, 700)
         self.setWindowIcon(QIcon(get_asset_path("icon.ico")))
 
-        # Use JSON-based settings instead of Windows Registry
         self.settings = JsonSettings("lithe_player_config.json")
 
         self.icons = {
@@ -3100,22 +2251,14 @@ class MainWindow(QMainWindow):
         self.restore_settings()
 
     def _setup_global_media_keys(self):
-        """Setup global media key handling."""
         try:
             self.global_media_handler = GlobalMediaKeyHandler(self)
-            
             if sys.platform == 'win32':
                 QApplication.instance().installNativeEventFilter(self.global_media_handler)
                 print("Global media key support enabled")
-            else:
-                print("Global media keys available for application focus only")
-                
         except Exception as e:
             print(f"Could not setup global media keys: {e}")
-            print("Falling back to application-level shortcuts")
 
-    # UI SETUP METHODS
-    
     def _setup_ui(self):
         """Initialize all UI components."""
         central = QWidget(self)
@@ -3123,12 +2266,8 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central)
 
         self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.setHandleWidth(7)  # Visible grey gap
-        self.splitter.setStyleSheet("""
-            QSplitter::handle {
-                background-color: transparent;
-            }
-        """)
+        self.splitter.setHandleWidth(7)
+        self.splitter.setStyleSheet("QSplitter::handle { background-color: transparent; }")
         main_layout.addWidget(self.splitter)
 
         self._setup_left_panel()
@@ -3140,8 +2279,6 @@ class MainWindow(QMainWindow):
         self.fs_model.setRootPath(default_path)
         self.tree.setRootIndex(self.fs_model.index(default_path))
         self.update_reset_action_state()
-        
-        # Auto-populate playlist if default directory is a flat folder with audio files
         self._auto_populate_playlist_on_startup(default_path)
 
     def _setup_left_panel(self):
@@ -3155,15 +2292,9 @@ class MainWindow(QMainWindow):
         self.tree.setAlternatingRowColors(True)
         self.tree.sortByColumn(0, Qt.AscendingOrder)
         self.tree.header().hide()
-        
-        # Enable rounded corners
         self.tree.setAttribute(Qt.WA_StyledBackground, True)
         self.tree.setFrameShape(QTreeView.NoFrame)
-        
-        # Set indentation for subfolder hierarchy visualization
         self.tree.setIndentation(15)
-        
-        # Disable root decoration (removes the space for branch indicators)
         self.tree.setRootIsDecorated(False)
 
         for col in range(1, self.fs_model.columnCount()):
@@ -3172,42 +2303,24 @@ class MainWindow(QMainWindow):
         self.tree_delegate = DirectoryBrowserDelegate(self.tree, self.tree)
         self.tree.setItemDelegate(self.tree_delegate)
         self.tree.setStyleSheet(self.get_tree_style("#3399ff", "white"))
-        
-        # Set viewport frame to none for rounded corners
         self.tree.viewport().setAttribute(Qt.WA_StyledBackground, True)
-        
         self.tree.expanded.connect(self._on_tree_expanded)
 
         self.album_art = AlbumArtLabel()
-        self.album_art.setStyleSheet("""
-            QLabel {
-                background: palette(base);
-                border: none;
-                border-radius: 8px;
-            }
-        """)
+        self.album_art.setStyleSheet("QLabel { background: palette(base); border: none; border-radius: 8px; }")
 
         self.left_splitter = QSplitter(Qt.Vertical)
-        self.left_splitter.setHandleWidth(7)  # Match horizontal splitter gap
-        self.left_splitter.setStyleSheet("""
-            QSplitter::handle {
-                background-color: transparent;
-            }
-        """)
+        self.left_splitter.setHandleWidth(7)
+        self.left_splitter.setStyleSheet("QSplitter::handle { background-color: transparent; }")
         self.left_splitter.addWidget(self.tree)
         self.left_splitter.addWidget(self.album_art)
         self.left_splitter.setSizes([400, 200])
-        
-        # Remove margins - splitter handle provides spacing
         self.left_splitter.setContentsMargins(0, 0, 0, 0)
 
         self.splitter.addWidget(self.left_splitter)
 
     def _on_tree_expanded(self, index):
-        """Ensure expanded folder stays visible."""
-        QTimer.singleShot(0, lambda: self.tree.scrollTo(
-            index, QAbstractItemView.PositionAtCenter
-        ))
+        QTimer.singleShot(0, lambda: self.tree.scrollTo(index, QAbstractItemView.PositionAtCenter))
 
     def _setup_right_panel(self):
         """Setup playlist table."""
@@ -3219,18 +2332,12 @@ class MainWindow(QMainWindow):
         self.playlist = PlaylistView(get_asset_path("logo.png"))
         self.playlist.setModel(self.playlist_model)
         self.playlist.setSelectionBehavior(QTableView.SelectRows)
-        # SelectionMode is now set in PlaylistView.__init__ to ExtendedSelection
         self.playlist.setAlternatingRowColors(True)
         self.playlist.setIconSize(QSize(16, 16))
         self.playlist.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
-        # Enable rounded corners
         self.playlist.setAttribute(Qt.WA_StyledBackground, True)
         self.playlist.setFrameShape(QTableView.NoFrame)
-        
         self.playlist.setStyleSheet(self.get_playlist_style())
-        
-        # Set viewport frame to none for rounded corners
         self.playlist.viewport().setAttribute(Qt.WA_StyledBackground, True)
 
         header = self.playlist.horizontalHeader()
@@ -3249,8 +2356,6 @@ class MainWindow(QMainWindow):
         self.controller = AudioPlayerController(self.playlist)
         self.controller.set_model(self.playlist_model)
         self.playlist_model.controller = self.controller
-        
-        # Connect tree view to playlist model for context menu operations
         self.tree.playlist_model = self.playlist_model
 
     def _setup_bottom_controls(self, parent_layout):
@@ -3311,7 +2416,6 @@ class MainWindow(QMainWindow):
 
     def _setup_menu_bar(self):
         """Setup application menu bar."""
-        # Remove shadow/border from menu dropdowns
         self.menuBar().setStyleSheet("""
             QMenu {
                 border: 1px solid palette(mid);
@@ -3378,53 +2482,30 @@ class MainWindow(QMainWindow):
         self.tree.doubleClicked.connect(self.on_tree_double_click)
         self.tree.expanded.connect(self.on_tree_expanded)
         self.playlist.doubleClicked.connect(self.on_playlist_double_click)
-        
         self.on_volume_changed(self.slider_vol.value())
 
     def _setup_keyboard_shortcuts(self):
         """Setup keyboard shortcuts."""
-        space_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self)
-        space_shortcut.activated.connect(self.on_playpause_clicked)
-        
-        left_shortcut = QShortcut(QKeySequence(Qt.Key_Left), self)
-        left_shortcut.activated.connect(self.on_prev_clicked)
-        
-        right_shortcut = QShortcut(QKeySequence(Qt.Key_Right), self)
-        right_shortcut.activated.connect(self.on_next_clicked)
+        QShortcut(QKeySequence(Qt.Key_Space), self).activated.connect(self.on_playpause_clicked)
+        QShortcut(QKeySequence(Qt.Key_Left), self).activated.connect(self.on_prev_clicked)
+        QShortcut(QKeySequence(Qt.Key_Right), self).activated.connect(self.on_next_clicked)
         
         try:
-            play_pause_shortcut = QShortcut(QKeySequence(Qt.Key_MediaPlay), self)
-            play_pause_shortcut.activated.connect(self.on_playpause_clicked)
-            
-            toggle_shortcut = QShortcut(QKeySequence(Qt.Key_MediaTogglePlayPause), self)
-            toggle_shortcut.activated.connect(self.on_playpause_clicked)
-            
-            pause_shortcut = QShortcut(QKeySequence(Qt.Key_MediaPause), self)
-            pause_shortcut.activated.connect(self.on_playpause_clicked)
-            
-            stop_shortcut = QShortcut(QKeySequence(Qt.Key_MediaStop), self)
-            stop_shortcut.activated.connect(self.on_stop_clicked)
-            
-            next_shortcut = QShortcut(QKeySequence(Qt.Key_MediaNext), self)
-            next_shortcut.activated.connect(self.on_next_clicked)
-            
-            prev_shortcut = QShortcut(QKeySequence(Qt.Key_MediaPrevious), self)
-            prev_shortcut.activated.connect(self.on_prev_clicked)
-            
+            QShortcut(QKeySequence(Qt.Key_MediaPlay), self).activated.connect(self.on_playpause_clicked)
+            QShortcut(QKeySequence(Qt.Key_MediaTogglePlayPause), self).activated.connect(self.on_playpause_clicked)
+            QShortcut(QKeySequence(Qt.Key_MediaPause), self).activated.connect(self.on_playpause_clicked)
+            QShortcut(QKeySequence(Qt.Key_MediaStop), self).activated.connect(self.on_stop_clicked)
+            QShortcut(QKeySequence(Qt.Key_MediaNext), self).activated.connect(self.on_next_clicked)
+            QShortcut(QKeySequence(Qt.Key_MediaPrevious), self).activated.connect(self.on_prev_clicked)
         except Exception as e:
             print(f"Some media key shortcuts unavailable: {e}")
-        
-        print("Keyboard shortcuts configured")
 
     def _setup_vlc_events(self):
         """Setup VLC player event handlers."""
         event_manager = self.controller.player.event_manager()
-        event_manager.event_attach(vlc.EventType.MediaPlayerPlaying, 
-                                   lambda e: self.on_playing())
-        event_manager.event_attach(vlc.EventType.MediaPlayerPaused, 
-                                   lambda e: self.on_paused())
-        event_manager.event_attach(vlc.EventType.MediaPlayerStopped, 
-                                   lambda e: self.on_stopped())
+        event_manager.event_attach(vlc.EventType.MediaPlayerPlaying, lambda e: self.on_playing())
+        event_manager.event_attach(vlc.EventType.MediaPlayerPaused, lambda e: self.on_paused())
+        event_manager.event_attach(vlc.EventType.MediaPlayerStopped, lambda e: self.on_stopped())
 
     def _create_button(self, icon_or_path, icon_size):
         """Helper to create a button with an icon."""
@@ -3436,30 +2517,23 @@ class MainWindow(QMainWindow):
         button.setIconSize(QSize(icon_size, icon_size))
         return button
 
-    # PLAYBACK EVENT HANDLERS
-    
+    # Playback event handlers
     def on_playing(self):
-        """Handle playing event."""
         self.update_playback_ui()
         self.update_playpause_icon()
 
     def on_paused(self):
-        """Handle paused event."""
         self.update_playback_ui()
         self.update_playpause_icon()
 
     def on_stopped(self):
-        """Handle stopped event."""
         self.update_playback_ui()
         self.update_playpause_icon()
-        # Stop equalizer safely via timer to ensure main thread execution
         if self.equalizer:
             QTimer.singleShot(0, lambda: self.equalizer.stop(clear_display=True))
 
-    # UI UPDATE METHODS
-    
+    # UI update methods
     def update_album_art(self, filepath):
-        """Update the album art display."""
         pixmap = extract_album_art(filepath)
         if pixmap:
             self.album_art.set_album_pixmap(pixmap)
@@ -3468,18 +2542,15 @@ class MainWindow(QMainWindow):
             self.album_art._original_pixmap = None
 
     def update_playpause_icon(self):
-        """Update play/pause button icon based on playback state."""
         if self.controller.player.is_playing():
             self.btn_playpause.setIcon(self.icons["ctrl_pause"])
         else:
             self.btn_playpause.setIcon(self.icons["ctrl_play"])
 
     def update_playback_ui(self):
-        """Update UI elements related to playback."""
         self.playlist.viewport().update()
 
     def update_slider_colors(self):
-        """Apply highlight color to sliders and equalizer."""
         if not self.playlist_model.highlight_color:
             return
         
@@ -3505,67 +2576,48 @@ class MainWindow(QMainWindow):
         self.equalizer.update_color(self.playlist_model.highlight_color)
 
     def update_tree_stylesheet(self, color):
-        """Update tree view stylesheet with selected highlight color."""
         text_color = "white" if is_dark_color(color) else "black"
-        self.tree.setStyleSheet(
-            self.get_tree_style(color.name(), text_color)
-        )
+        self.tree.setStyleSheet(self.get_tree_style(color.name(), text_color))
 
     def update_reset_action_state(self):
-        """Enable/disable reset default folder action."""
         self.reset_default_act.setEnabled(self.settings.contains("default_dir"))
 
-    # PLAYBACK CONTROL HANDLERS
-    
+    # Playback control handlers
     def on_playpause_clicked(self):
-        """Handle play/pause button click."""
         if self.controller.gapless_manager.is_playing():
-            # Currently playing - pause it
             self.controller.pause()
         else:
-            # Check if we have a valid current index
             if self.playlist_model.rowCount() > 0:
                 if self.controller.current_index == -1:
-                    # No track selected - start from beginning
                     self.controller.play_index(0)
                 else:
-                    # Resume or replay current track
                     self.controller.play()
-            else:
-                print("No tracks in playlist")
-        
         self.update_playback_ui()
         self.update_playpause_icon()
 
     def on_stop_clicked(self):
-        """Handle stop button click."""
         self.controller.stop()
         self.update_playback_ui()
 
     def on_prev_clicked(self):
-        """Handle previous button click."""
         self.controller.previous()
         self.update_playback_ui()
 
     def on_next_clicked(self):
-        """Handle next button click."""
         self.controller.next()
         self.update_playback_ui()
 
     def on_volume_changed(self, volume):
-        """Handle volume slider change."""
         self.controller.set_volume(volume)
 
     def on_seek(self):
-        """Handle progress slider seek."""
-        if self.controller.player and self.controller.player.is_playing():
-            length = self.controller.player.get_length()
+        if self.controller.gapless_manager and self.controller.gapless_manager.is_playing():
+            length = self.controller.gapless_manager.get_length()
             if length > 0:
                 position = self.progress_slider.value() / 1000.0
-                self.controller.player.set_time(int(length * position))
+                self.controller.gapless_manager.set_time(int(length * position))
 
     def update_progress(self):
-        """Update progress slider and time label."""
         if not self.controller.gapless_manager:
             return
         
@@ -3582,129 +2634,93 @@ class MainWindow(QMainWindow):
             length_str = self.format_time(length)
             self.lbl_time.setText(f"{current_str} / {length_str}")
 
-    def on_seek(self):
-        """Handle progress slider seek."""
-        if self.controller.gapless_manager and self.controller.gapless_manager.is_playing():
-            length = self.controller.gapless_manager.get_length()
-            if length > 0:
-                position = self.progress_slider.value() / 1000.0
-                self.controller.gapless_manager.set_time(int(length * position))
-
     @staticmethod
     def format_time(milliseconds):
-        """Format time from milliseconds to MM:SS."""
         seconds = milliseconds // 1000
         minutes, seconds = divmod(seconds, 60)
         return f"{minutes}:{seconds:02d}"
 
-    # FILE BROWSER HANDLERS
-    
+    # File browser handlers
     def on_tree_double_click(self, index):
-        """Handle double-click on file browser."""
         path = self.fs_model.filePath(index)
         
         if os.path.isfile(path):
             if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
-                # Double-clicking a file should replace the playlist and play it
                 self.playlist_model.add_tracks([path], clear=True)
                 self.controller.play_index(0)
                 self.update_playback_ui()
         elif os.path.isdir(path):
-            # Only auto-play folders if playlist is empty
             playlist_is_empty = self.playlist_model.rowCount() == 0
             
             if playlist_is_empty:
-                # Playlist is empty - check if folder has audio and auto-play
                 files = self._get_audio_files_from_directory(path)
                 if files:
-                    # Folder has audio files - add and start playing (don't expand)
                     self.playlist_model.add_tracks(files, clear=True)
                     self.controller.play_index(0)
                     self.update_playback_ui()
                     return
-            
-            # Playlist has tracks OR folder has no audio - let Qt handle expansion normally
-            # Don't do anything, Qt will handle the expand/collapse automatically
 
     def on_tree_expanded(self, index):
-        """Handle tree expansion - collapse siblings."""
         parent = index.parent()
         for row in range(self.fs_model.rowCount(parent)):
             sibling = self.fs_model.index(row, 0, parent)
             if sibling != index and self.tree.isExpanded(sibling):
                 self.tree.collapse(sibling)
 
-    # PLAYLIST HANDLERS
-    
+    # Playlist handlers
     def on_playlist_double_click(self, index):
-        """Handle double-click on playlist."""
         self.controller.play_index(index.row())
         self.update_playback_ui()
 
-    # MENU ACTION HANDLERS
-    
+    # Menu action handlers
     def on_set_playlist_font(self):
-        """Handle 'Set playlist font' menu action."""
         if self.playlist_font_dialog is None or not self.playlist_font_dialog.isVisible():
             current_font = self.playlist.font()
             self.playlist_font_dialog = FontSelectionDialog(
                 current_font, "Playlist Font Selection", self
             )
             self.playlist_font_dialog.font_changed.connect(self._on_playlist_font_changed)
-        
         self.playlist_font_dialog.show()
         self.playlist_font_dialog.raise_()
         self.playlist_font_dialog.activateWindow()
     
     def _on_playlist_font_changed(self, font):
-        """Handle playlist font change from dialog."""
         self.playlist.setFont(font)
-        # Save font settings
         self.settings.setValue("playlistFontFamily", font.family())
         self.settings.setValue("playlistFontSize", font.pointSize())
-        # Force refresh
         self.playlist.viewport().update()
     
     def on_set_browser_font(self):
-        """Handle 'Set directory browser font' menu action."""
         if self.browser_font_dialog is None or not self.browser_font_dialog.isVisible():
             current_font = self.tree.font()
             self.browser_font_dialog = FontSelectionDialog(
                 current_font, "Directory Browser Font Selection", self
             )
             self.browser_font_dialog.font_changed.connect(self._on_browser_font_changed)
-        
         self.browser_font_dialog.show()
         self.browser_font_dialog.raise_()
         self.browser_font_dialog.activateWindow()
     
     def _on_browser_font_changed(self, font):
-        """Handle browser font change from dialog."""
         self.tree.setFont(font)
-        # Save font settings
         self.settings.setValue("browserFontFamily", font.family())
         self.settings.setValue("browserFontSize", font.pointSize())
-        # Force refresh
-        self.tree.viewport().update()    
+        self.tree.viewport().update()
     
     def on_adjust_peak_transparency(self):
-        """Handle 'Adjust peak indicator transparency' menu action."""
         if self.peak_transparency_dialog is None or not self.peak_transparency_dialog.isVisible():
             current_alpha = self.equalizer.peak_alpha
             self.peak_transparency_dialog = PeakTransparencyDialog(current_alpha, self)
             self.peak_transparency_dialog.transparency_changed.connect(self._on_peak_transparency_changed)
-        
         self.peak_transparency_dialog.show()
         self.peak_transparency_dialog.raise_()
         self.peak_transparency_dialog.activateWindow()
     
     def _on_peak_transparency_changed(self, alpha):
-        """Handle peak transparency change from dialog."""
         self.equalizer.set_peak_alpha(alpha)
-        self.settings.setValue("peakAlpha", alpha)    
+        self.settings.setValue("peakAlpha", alpha)
     
     def on_choose_peak_color(self):
-        """Handle 'Set peak indicator colour' menu action."""
         color = QColorDialog.getColor()
         if color.isValid():
             self.equalizer.set_peak_color(color)
@@ -3713,7 +2729,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Peak indicator colour set to {color.name()}", 3000)
                 
     def on_reset_peak_color(self):
-        """Handle 'Reset peak indicator colour' menu action."""
         reply = QMessageBox.question(
             self, "Reset Peak Indicator Colour",
             "Reset peak indicator colour to automatic?\n\n"
@@ -3724,13 +2739,10 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.Yes:
             self.equalizer.reset_peak_color()
             self.settings.remove("peakColor")
-            self.reset_peak_color_act.setEnabled(False)    
+            self.reset_peak_color_act.setEnabled(False)
     
     def on_add_folder_clicked(self):
-        """Handle 'Open folder' menu action."""
-        folder = QFileDialog.getExistingDirectory(
-            self, "Choose music folder", QDir.homePath()
-        )
+        folder = QFileDialog.getExistingDirectory(self, "Choose music folder", QDir.homePath())
         if not folder:
             return
         
@@ -3739,11 +2751,9 @@ class MainWindow(QMainWindow):
             self.playlist_model.add_tracks(files, clear=True)
             if self.playlist_model.rowCount() > 0:
                 self.controller.play_index(0)
-        
         self.update_playback_ui()
 
     def on_choose_default_folder(self):
-        """Handle 'Choose default folder' menu action."""
         folder = QFileDialog.getExistingDirectory(
             self, "Select default music folder", QDir.rootPath()
         )
@@ -3755,7 +2765,6 @@ class MainWindow(QMainWindow):
             self.update_reset_action_state()
 
     def on_reset_default_folder(self):
-        """Handle 'Reset default folder' menu action."""
         if not self.settings.contains("default_dir"):
             self.statusBar().showMessage("No default folder set", 3000)
             return
@@ -3776,7 +2785,6 @@ class MainWindow(QMainWindow):
             self.update_reset_action_state()
 
     def on_choose_highlight_color(self):
-        """Handle 'Set accent colour' menu action."""
         color = QColorDialog.getColor()
         if color.isValid():
             self.playlist_model.highlight_color = color
@@ -3786,10 +2794,9 @@ class MainWindow(QMainWindow):
             self.update_playback_ui()
             self.update_slider_colors()
             self.equalizer.update_color(color)
-    # HELPER METHODS
-    
+
+    # Helper methods
     def _get_audio_files_from_directory(self, directory):
-        """Get sorted list of audio files from directory."""
         files = []
         try:
             for name in sorted(os.listdir(directory)):
@@ -3802,11 +2809,7 @@ class MainWindow(QMainWindow):
         return files
     
     def _auto_populate_playlist_on_startup(self, directory):
-        """
-        Auto-populate playlist if default directory is a flat folder with audio files.
-        Only populates if: directory has audio files AND no subdirectories.
-        Does NOT auto-play.
-        """
+        """Auto-populate playlist if default directory is a flat folder with audio files."""
         if not os.path.isdir(directory):
             return
         
@@ -3814,29 +2817,24 @@ class MainWindow(QMainWindow):
             has_subdirs = False
             audio_files = []
             
-            # Check directory contents
             for name in sorted(os.listdir(directory)):
                 path = os.path.join(directory, name)
                 if os.path.isdir(path):
                     has_subdirs = True
-                    break  # Found a subdirectory, stop checking
+                    break
                 elif os.path.isfile(path):
                     if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
                         audio_files.append(path)
             
-            # Only populate if it's a flat directory (no subdirs) with audio files
             if not has_subdirs and audio_files:
                 self.playlist_model.add_tracks(audio_files, clear=True)
-                print(f"Auto-populated playlist with {len(audio_files)} tracks from flat directory")
-                
+                print(f"Auto-populated playlist with {len(audio_files)} tracks")
         except (PermissionError, OSError) as e:
             print(f"Could not auto-populate playlist: {e}")
 
-    # SETTINGS PERSISTENCE
-    
+    # Settings persistence
     def restore_settings(self):
         """Restore saved settings from previous session."""
-        # Restore highlight color
         color_name = self.settings.value("highlightColor")
         if color_name:
             color = QColor(color_name)
@@ -3847,17 +2845,6 @@ class MainWindow(QMainWindow):
                 self.update_slider_colors()
                 self.equalizer.update_color(color)
         
-        # Restore peak indicator color
-        peak_color_name = self.settings.value("peakColor")
-        if peak_color_name:
-            peak_color = QColor(peak_color_name)
-            if peak_color.isValid():
-                self.equalizer.set_peak_color(peak_color)
-                self.reset_peak_color_act.setEnabled(True)
-        else:
-            self.reset_peak_color_act.setEnabled(False)
-            
-                    # Restore peak indicator color
         peak_color_name = self.settings.value("peakColor")
         if peak_color_name:
             peak_color = QColor(peak_color_name)
@@ -3867,26 +2854,20 @@ class MainWindow(QMainWindow):
         else:
             self.reset_peak_color_act.setEnabled(False)
         
-        # Restore peak indicator transparency
         if self.settings.contains("peakAlpha"):
             peak_alpha = int(self.settings.value("peakAlpha"))
             self.equalizer.set_peak_alpha(peak_alpha)
 
-        # Restore playlist font
         if self.settings.contains("playlistFontFamily"):
             font_family = self.settings.value("playlistFontFamily")
             font_size = int(self.settings.value("playlistFontSize", 10))
-            playlist_font = QFont(font_family, font_size)
-            self.playlist.setFont(playlist_font)
+            self.playlist.setFont(QFont(font_family, font_size))
         
-        # Restore directory browser font
         if self.settings.contains("browserFontFamily"):
             font_family = self.settings.value("browserFontFamily")
             font_size = int(self.settings.value("browserFontSize", 10))
-            browser_font = QFont(font_family, font_size)
-            self.tree.setFont(browser_font)
+            self.tree.setFont(QFont(font_family, font_size))
 
-        # Restore window geometry and state
         if self.settings.contains("geometry"):
             self.restoreGeometry(self.settings.value("geometry"))
         if self.settings.contains("leftSplitterState"):
@@ -3896,11 +2877,8 @@ class MainWindow(QMainWindow):
         if self.settings.contains("splitterState"):
             self.splitter.restoreState(self.settings.value("splitterState"))
         if self.settings.contains("playlistHeader"):
-            self.playlist.horizontalHeader().restoreState(
-                self.settings.value("playlistHeader")
-            )
+            self.playlist.horizontalHeader().restoreState(self.settings.value("playlistHeader"))
         
-        # Restore volume
         if self.settings.contains("volume"):
             vol = int(self.settings.value("volume"))
             self.slider_vol.setValue(vol)
@@ -3908,19 +2886,16 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Save settings on application close."""
-        # Cleanup global media key handler
         if self.global_media_handler:
             self.global_media_handler.cleanup()
             if sys.platform == 'win32':
                 QApplication.instance().removeNativeEventFilter(self.global_media_handler)
         
-        # Save settings
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("leftSplitterState", self.left_splitter.saveState())
         self.settings.setValue("windowState", self.saveState())
         self.settings.setValue("splitterState", self.splitter.saveState())
-        self.settings.setValue("playlistHeader", 
-                               self.playlist.horizontalHeader().saveState())
+        self.settings.setValue("playlistHeader", self.playlist.horizontalHeader().saveState())
         self.settings.setValue("volume", self.slider_vol.value())
         super().closeEvent(event)
 
@@ -3930,7 +2905,6 @@ class MainWindow(QMainWindow):
 
 def main():
     """Main application entry point."""
-    # Windows taskbar icon fix
     if sys.platform == 'win32':
         try:
             myappid = u"litheplayer.audio.app"
@@ -3942,16 +2916,13 @@ def main():
     app.setApplicationName("Lithe Player")
     app.setWindowIcon(QIcon(get_asset_path("icon.ico")))
 
-    # Create splash screen
     splash_pix = QPixmap(get_asset_path("splash.png"))
     splash = QSplashScreen(splash_pix)
     splash.show()
     app.processEvents()
 
-    # Create main window
     window = MainWindow()
 
-    # Show main window after splash delay
     QTimer.singleShot(SPLASH_SCREEN_DURATION_MS, 
                      lambda: (splash.finish(window), window.show()))
 
@@ -3959,4 +2930,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()             
+    main()
+
