@@ -1600,17 +1600,26 @@ class PlaylistView(QTableView):
             if index.isValid():
                 modifiers = event.modifiers()
                 if modifiers & (Qt.ControlModifier | Qt.ShiftModifier):
+                    # Let default handler manage Ctrl/Shift selection
                     super().mousePressEvent(event)
                 else:
+                    # Start drag selection
                     self._drag_selecting = True
                     self._drag_start_row = index.row()
                     self.clearSelection()
                     self.selectRow(index.row())
             else:
+                # Clicked on empty area - clear selection
                 self.clearSelection()
-                super().mousePressEvent(event)
-        else:
-            super().mousePressEvent(event)
+        
+        # Always call parent to let Qt track double-clicks properly
+        super().mousePressEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_selecting = False
+            self._drag_start_row = -1
+        super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event):
         index = self.indexAt(event.position().toPoint())
@@ -1628,12 +1637,6 @@ class PlaylistView(QTableView):
                     self.selectRow(row)
         
         super().mouseMoveEvent(event)
-    
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._drag_selecting = False
-            self._drag_start_row = -1
-        super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event):
         delegate = self.itemDelegate()
@@ -1701,4 +1704,1221 @@ class PlaylistView(QTableView):
         
         return super().viewportEvent(event)
 
-# [Continued in next message - part 2...]
+class PeakTransparencyDialog(QWidget):
+    """Dialog for adjusting peak indicator transparency."""
+    
+    transparency_changed = Signal(int)
+    
+    def __init__(self, current_alpha=255, parent=None):
+        super().__init__(parent, Qt.Window)
+        self.setWindowTitle("Peak Indicator Transparency")
+        self.setWindowIcon(QIcon(get_asset_path("icon.ico")))
+        self.resize(400, 150)
+        
+        layout = QVBoxLayout(self)
+        
+        title = QLabel("Adjust Peak Indicator Transparency")
+        title.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px;")
+        layout.addWidget(title)
+        
+        slider_layout = QHBoxLayout()
+        
+        self.label_transparent = QLabel("Transparent")
+        self.label_transparent.setStyleSheet("color: #666;")
+        slider_layout.addWidget(self.label_transparent)
+        
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, 255)
+        self.slider.setValue(current_alpha)
+        self.slider.setTickPosition(QSlider.TicksBelow)
+        self.slider.setTickInterval(25)
+        self.slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: 1px solid #bbb;
+                height: 8px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(100, 100, 100, 50),
+                    stop:1 rgba(100, 100, 100, 255));
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #3399ff;
+                border: 1px solid #777;
+                width: 18px;
+                margin: -5px 0;
+                border-radius: 9px;
+            }
+            QSlider::handle:horizontal:pressed { background: #2277dd; }
+        """)
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        slider_layout.addWidget(self.slider, 1)
+        
+        self.label_opaque = QLabel("Opaque")
+        self.label_opaque.setStyleSheet("color: #666;")
+        slider_layout.addWidget(self.label_opaque)
+        layout.addLayout(slider_layout)
+        
+        self.value_label = QLabel(f"Current: {int((current_alpha / 255) * 100)}%")
+        self.value_label.setAlignment(Qt.AlignCenter)
+        self.value_label.setStyleSheet("font-size: 12px; color: #555; padding: 10px;")
+        layout.addWidget(self.value_label)
+        
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        reset_btn = QPushButton("Reset to Default")
+        reset_btn.clicked.connect(self._reset_to_default)
+        button_layout.addWidget(reset_btn)
+        
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        button_layout.addWidget(close_btn)
+        layout.addLayout(button_layout)
+    
+    def _on_slider_changed(self, value):
+        percentage = int((value / 255) * 100)
+        self.value_label.setText(f"Current: {percentage}%")
+        self.transparency_changed.emit(value)
+    
+    def _reset_to_default(self):
+        self.slider.setValue(255)
+
+class FontSelectionDialog(QWidget):
+    """Dialog for selecting font family and size."""
+    
+    font_changed = Signal(QFont)
+    
+    def __init__(self, current_font=None, title="Font Selection", parent=None):
+        super().__init__(parent, Qt.Window)
+        self.setWindowTitle(title)
+        self.setWindowIcon(QIcon(get_asset_path("icon.ico")))
+        self.resize(450, 250)
+        
+        if current_font is None:
+            current_font = QFont()
+        self.current_font = QFont(current_font)
+        
+        layout = QVBoxLayout(self)
+        
+        title_label = QLabel(f"{title}")
+        title_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 10px;")
+        layout.addWidget(title_label)
+        
+        family_layout = QHBoxLayout()
+        family_label = QLabel("Font Family:")
+        family_label.setStyleSheet("color: #555; font-weight: bold;")
+        family_layout.addWidget(family_label)
+        
+        self.font_combo = QFontComboBox()
+        self.font_combo.setCurrentFont(self.current_font)
+        self.font_combo.currentFontChanged.connect(self._on_font_changed)
+        family_layout.addWidget(self.font_combo, 1)
+        layout.addLayout(family_layout)
+        
+        size_layout = QHBoxLayout()
+        size_label = QLabel("Font Size:")
+        size_label.setStyleSheet("color: #555; font-weight: bold;")
+        size_layout.addWidget(size_label)
+        
+        self.size_slider = QSlider(Qt.Horizontal)
+        self.size_slider.setRange(6, 24)
+        self.size_slider.setValue(self.current_font.pointSize())
+        self.size_slider.setTickPosition(QSlider.TicksBelow)
+        self.size_slider.setTickInterval(2)
+        self.size_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: 1px solid #bbb;
+                height: 8px;
+                background: #e0e0e0;
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #3399ff;
+                border: 1px solid #777;
+                width: 18px;
+                margin: -5px 0;
+                border-radius: 9px;
+            }
+            QSlider::handle:horizontal:pressed { background: #2277dd; }
+        """)
+        self.size_slider.valueChanged.connect(self._on_size_changed)
+        size_layout.addWidget(self.size_slider, 1)
+        
+        self.size_label = QLabel(f"{self.current_font.pointSize()} pt")
+        self.size_label.setStyleSheet("color: #555; min-width: 50px;")
+        size_layout.addWidget(self.size_label)
+        layout.addLayout(size_layout)
+        
+        preview_group = QWidget()
+        preview_group.setStyleSheet("background: white; border: 1px solid #ccc; border-radius: 4px;")
+        preview_layout = QVBoxLayout(preview_group)
+        
+        preview_title = QLabel("Preview:")
+        preview_title.setStyleSheet("font-weight: bold; color: #555;")
+        preview_layout.addWidget(preview_title)
+        
+        self.preview_label = QLabel("The quick brown fox jumps over the lazy dog\n0123456789")
+        self.preview_label.setFont(self.current_font)
+        self.preview_label.setStyleSheet("padding: 10px;")
+        preview_layout.addWidget(self.preview_label)
+        layout.addWidget(preview_group)
+        
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        reset_btn = QPushButton("Reset to Default")
+        reset_btn.clicked.connect(self._reset_to_default)
+        button_layout.addWidget(reset_btn)
+        
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(self._apply_font)
+        button_layout.addWidget(apply_btn)
+        
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        button_layout.addWidget(close_btn)
+        layout.addLayout(button_layout)
+    
+    def _on_font_changed(self, font):
+        self.current_font.setFamily(font.family())
+        self._update_preview()
+    
+    def _on_size_changed(self, size):
+        self.current_font.setPointSize(size)
+        self.size_label.setText(f"{size} pt")
+        self._update_preview()
+    
+    def _update_preview(self):
+        self.preview_label.setFont(self.current_font)
+    
+    def _apply_font(self):
+        self.font_changed.emit(self.current_font)
+    
+    def _reset_to_default(self):
+        default_font = QFont()
+        self.font_combo.setCurrentFont(default_font)
+        self.size_slider.setValue(default_font.pointSize())
+
+# ============================================================================
+# GLOBAL MEDIA KEY HANDLER
+# ============================================================================
+
+class GlobalMediaKeyHandler(QAbstractNativeEventFilter):
+    """Cross-platform global media key handler."""
+    
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+        self.hwnd = None
+        self.setup_platform_handler()
+    
+    def setup_platform_handler(self):
+        if sys.platform == 'win32':
+            self._setup_windows_handler()
+        elif sys.platform == 'darwin':
+            print("macOS media key support requires additional configuration")
+        else:
+            print("Linux media key support via MPRIS not fully implemented")
+    
+    def _setup_windows_handler(self):
+        try:
+            self.hwnd = int(self.main_window.winId())
+            
+            self.HOTKEY_PLAY_PAUSE = 1
+            self.HOTKEY_STOP = 2
+            self.HOTKEY_NEXT = 3
+            self.HOTKEY_PREV = 4
+            
+            VK_MEDIA_PLAY_PAUSE = 0xB3
+            VK_MEDIA_STOP = 0xB2
+            VK_MEDIA_NEXT_TRACK = 0xB0
+            VK_MEDIA_PREV_TRACK = 0xB1
+            
+            user32 = ctypes.windll.user32
+            
+            result1 = user32.RegisterHotKey(self.hwnd, self.HOTKEY_PLAY_PAUSE, 0, VK_MEDIA_PLAY_PAUSE)
+            result2 = user32.RegisterHotKey(self.hwnd, self.HOTKEY_STOP, 0, VK_MEDIA_STOP)
+            result3 = user32.RegisterHotKey(self.hwnd, self.HOTKEY_NEXT, 0, VK_MEDIA_NEXT_TRACK)
+            result4 = user32.RegisterHotKey(self.hwnd, self.HOTKEY_PREV, 0, VK_MEDIA_PREV_TRACK)
+            
+            if result1 and result2 and result3 and result4:
+                print("Windows global media keys registered successfully")
+            else:
+                print("Some media keys could not be registered")
+        except Exception as e:
+            print(f"Failed to setup Windows media keys: {e}")
+    
+    def nativeEventFilter(self, eventType, message):
+        if sys.platform == 'win32':
+            try:
+                WM_HOTKEY = 0x0312
+                
+                if eventType == b"windows_generic_MSG" or eventType == b"windows_dispatcher_MSG":
+                    msg = wintypes.MSG.from_address(int(message))
+                    
+                    if msg.message == WM_HOTKEY:
+                        if msg.wParam == self.HOTKEY_PLAY_PAUSE:
+                            QTimer.singleShot(0, self.main_window.on_playpause_clicked)
+                            return True, 0
+                        elif msg.wParam == self.HOTKEY_STOP:
+                            QTimer.singleShot(0, self.main_window.on_stop_clicked)
+                            return True, 0
+                        elif msg.wParam == self.HOTKEY_NEXT:
+                            QTimer.singleShot(0, self.main_window.on_next_clicked)
+                            return True, 0
+                        elif msg.wParam == self.HOTKEY_PREV:
+                            QTimer.singleShot(0, self.main_window.on_prev_clicked)
+                            return True, 0
+            except Exception as e:
+                print(f"Error processing native event: {e}")
+        
+        return False, 0
+    
+    def cleanup(self):
+        if sys.platform == 'win32' and self.hwnd:
+            try:
+                user32 = ctypes.windll.user32
+                user32.UnregisterHotKey(self.hwnd, self.HOTKEY_PLAY_PAUSE)
+                user32.UnregisterHotKey(self.hwnd, self.HOTKEY_STOP)
+                user32.UnregisterHotKey(self.hwnd, self.HOTKEY_NEXT)
+                user32.UnregisterHotKey(self.hwnd, self.HOTKEY_PREV)
+                print("Windows global media keys unregistered")
+            except Exception as e:
+                print(f"Error unregistering hotkeys: {e}")
+
+# ============================================================================
+# MAIN WINDOW
+# ============================================================================
+
+class MainWindow(QMainWindow):
+    """Main application window."""
+
+    @staticmethod
+    def get_tree_style(highlight_color, highlight_text_color):
+        """Generate theme-aware tree view stylesheet."""
+        app = QApplication.instance()
+        if not app:
+            return f"""
+                QTreeView {{
+                    background-color: rgba(255, 255, 255, 150);
+                    alternate-background-color: rgba(240, 240, 240, 150);
+                    border: none;
+                    border-radius: 8px;
+                    color: #000000;
+                }}
+                QTreeView::viewport {{ border: none; border-radius: 8px; background: transparent; }}
+                QTreeView::item {{ padding: 0px 4px; min-height: 12px; border: none; outline: none; }}
+                QTreeView::item:hover {{ background: #dceeff; color: black; }}
+                QTreeView::item:selected {{ background: {highlight_color}; color: {highlight_text_color}; }}
+                QTreeView::branch {{ background: transparent; width: 0px; border: none; }}
+            """
+        
+        palette = app.palette()
+        base_color = palette.color(QPalette.Base)
+        text_color = palette.color(QPalette.Text)
+        is_dark = is_dark_color(base_color)
+        
+        if is_dark:
+            hover_bg = base_color.lighter(120).name()
+            alternate_bg = f"rgba({base_color.lighter(110).red()}, {base_color.lighter(110).green()}, {base_color.lighter(110).blue()}, 150)"
+            bg = f"rgba({base_color.red()}, {base_color.green()}, {base_color.blue()}, 150)"
+        else:
+            hover_bg = "#dceeff"
+            alternate_bg = "rgba(240, 240, 240, 150)"
+            bg = "rgba(255, 255, 255, 150)"
+        
+        return f"""
+            QTreeView {{
+                background-color: {bg};
+                alternate-background-color: {alternate_bg};
+                border: none;
+                border-radius: 8px;
+                color: {text_color.name()};
+            }}
+            QTreeView::viewport {{ border: none; border-radius: 8px; background: transparent; }}
+            QTreeView::item {{ padding: 0px 4px; min-height: 12px; border: none; outline: none; }}
+            QTreeView::item:hover {{ background: {hover_bg}; }}
+            QTreeView::item:selected {{ background: {highlight_color}; color: {highlight_text_color}; }}
+            QTreeView::branch {{ background: transparent; width: 0px; border: none; }}
+        """
+
+    @staticmethod
+    def get_button_style():
+        """Generate theme-aware button stylesheet."""
+        app = QApplication.instance()
+        if not app:
+            return """
+                QPushButton {
+                    background-color: #f0f0f0;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 6px;
+                }
+                QPushButton:hover { background-color: #e0e0e0; }
+                QPushButton:pressed { background-color: #d0d0d0; }
+            """
+        
+        palette = app.palette()
+        button_color = palette.color(QPalette.Button)
+        base_color = palette.color(QPalette.Base)
+        is_dark = is_dark_color(base_color)
+        
+        if is_dark:
+            hover_color = button_color.lighter(130)
+            pressed_color = button_color.darker(120)
+        else:
+            hover_color = button_color.darker(110)
+            pressed_color = button_color.darker(120)
+        
+        return f"""
+            QPushButton {{
+                background-color: {button_color.name()};
+                border: none;
+                border-radius: 6px;
+                padding: 6px;
+            }}
+            QPushButton:hover {{ background-color: {hover_color.name()}; }}
+            QPushButton:pressed {{ background-color: {pressed_color.name()}; }}
+        """
+
+    @staticmethod
+    def get_slider_style():
+        """Generate theme-aware slider stylesheet."""
+        app = QApplication.instance()
+        if not app:
+            return """
+                QSlider::groove:horizontal {
+                    border: 1px solid #bbb;
+                    height: 8px;
+                    background: #e0e0e0;
+                    border-radius: 4px;
+                }
+                QSlider::sub-page:horizontal {
+                    background: #3399ff;
+                    border: 1px solid #777;
+                    height: 8px;
+                    border-radius: 4px;
+                }
+                QSlider::add-page:horizontal {
+                    background: #e0e0e0;
+                    border: 1px solid #777;
+                    height: 8px;
+                    border-radius: 4px;
+                }
+                QSlider::handle:horizontal {
+                    background: #ffffff;
+                    border: 1px solid #777;
+                    width: 14px;
+                    height: 14px;
+                    margin: -4px 0;
+                    border-radius: 7px;
+                }
+                QSlider::handle:horizontal:pressed { background: #cccccc; }
+            """
+        
+        palette = app.palette()
+        base_color = palette.color(QPalette.Base)
+        highlight_color = palette.color(QPalette.Highlight)
+        button_color = palette.color(QPalette.Button)
+        
+        return f"""
+            QSlider::groove:horizontal {{
+                border: 1px solid palette(mid);
+                height: 8px;
+                background: {base_color.darker(110).name()};
+                border-radius: 4px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {highlight_color.name()};
+                border: 1px solid palette(dark);
+                height: 8px;
+                border-radius: 4px;
+            }}
+            QSlider::add-page:horizontal {{
+                background: {base_color.darker(110).name()};
+                border: 1px solid palette(dark);
+                height: 8px;
+                border-radius: 4px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {button_color.name()};
+                border: 1px solid palette(dark);
+                width: 14px;
+                height: 14px;
+                margin: -4px 0;
+                border-radius: 7px;
+            }}
+            QSlider::handle:horizontal:pressed {{ background: {button_color.darker(110).name()}; }}
+        """
+
+    @staticmethod
+    def get_playlist_style():
+        """Generate theme-aware playlist stylesheet."""
+        app = QApplication.instance()
+        if not app:
+            return """
+                QTableView {
+                    background-color: rgba(255, 255, 255, 150);
+                    alternate-background-color: rgba(240, 240, 240, 150);
+                    border: none;
+                    border-radius: 8px;
+                    gridline-color: #ddd;
+                    selection-background-color: transparent;
+                    selection-color: inherit;
+                    outline: none;
+                }
+                QTableView::viewport { border: none; border-radius: 8px; background: transparent; }
+                QTableView::item { background-color: transparent; padding: 4px 6px; border: none; outline: none; }
+                QTableView::item:selected { background: transparent; color: inherit; }
+            """
+        
+        palette = app.palette()
+        base_color = palette.color(QPalette.Base)
+        is_dark = is_dark_color(base_color)
+        
+        if is_dark:
+            return f"""
+                QTableView {{
+                    background-color: rgba({base_color.red()}, {base_color.green()}, {base_color.blue()}, 150);
+                    alternate-background-color: rgba({base_color.lighter(110).red()}, {base_color.lighter(110).green()}, {base_color.lighter(110).blue()}, 150);
+                    border: none;
+                    border-radius: 8px;
+                    gridline-color: palette(mid);
+                    selection-background-color: transparent;
+                    selection-color: inherit;
+                    outline: none;
+                    color: palette(text);
+                }}
+                QTableView::viewport {{ border: none; border-radius: 8px; background: transparent; }}
+                QTableView::item {{ background-color: transparent; padding: 4px 6px; border: none; outline: none; }}
+                QTableView::item:selected {{ background: transparent; color: inherit; }}
+            """
+        else:
+            return """
+                QTableView {
+                    background-color: rgba(255, 255, 255, 150);
+                    alternate-background-color: rgba(240, 240, 240, 150);
+                    border: none;
+                    border-radius: 8px;
+                    gridline-color: #ddd;
+                    selection-background-color: transparent;
+                    selection-color: inherit;
+                    outline: none;
+                }
+                QTableView::viewport { border: none; border-radius: 8px; background: transparent; }
+                QTableView::item { background-color: transparent; padding: 4px 6px; border: none; outline: none; }
+                QTableView::item:selected { background: transparent; color: inherit; }
+            """
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Lithe Player")
+        self.resize(1100, 700)
+        self.setWindowIcon(QIcon(get_asset_path("icon.ico")))
+
+        self.settings = JsonSettings("lithe_player_config.json")
+
+        self.icons = {
+            "row_play": QIcon(get_asset_path("plplay.svg")),
+            "row_play_white": QIcon(get_asset_path("plplaywhite.svg")),
+            "row_pause": QIcon(get_asset_path("plpause.svg")),
+            "row_pause_white": QIcon(get_asset_path("plpausewhite.svg")),
+            "ctrl_play": get_themed_icon("play.svg"),
+            "ctrl_pause": get_themed_icon("pause.svg"),
+        }
+
+        self._setup_ui()
+        self._setup_connections()
+        self._setup_vlc_events()
+        self._setup_keyboard_shortcuts()
+
+        self.global_media_handler = None
+        self.peak_transparency_dialog = None
+        self.playlist_font_dialog = None
+        self.browser_font_dialog = None
+        self._setup_global_media_keys()
+
+        self.restore_settings()
+
+    def _setup_global_media_keys(self):
+        try:
+            self.global_media_handler = GlobalMediaKeyHandler(self)
+            if sys.platform == 'win32':
+                QApplication.instance().installNativeEventFilter(self.global_media_handler)
+                print("Global media key support enabled")
+        except Exception as e:
+            print(f"Could not setup global media keys: {e}")
+
+    def _setup_ui(self):
+        """Initialize all UI components."""
+        central = QWidget(self)
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setHandleWidth(7)
+        self.splitter.setStyleSheet("QSplitter::handle { background-color: transparent; }")
+        main_layout.addWidget(self.splitter)
+
+        self._setup_left_panel()
+        self._setup_right_panel()
+        self._setup_bottom_controls(main_layout)
+        self._setup_menu_bar()
+
+        default_path = self.settings.value("default_dir", QDir.rootPath())
+        self.fs_model.setRootPath(default_path)
+        self.tree.setRootIndex(self.fs_model.index(default_path))
+        self.update_reset_action_state()
+        self._auto_populate_playlist_on_startup(default_path)
+
+    def _setup_left_panel(self):
+        """Setup file browser and album art display."""
+        self.fs_model = QFileSystemModel()
+        self.fs_model.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
+
+        self.tree = DirectoryTreeView()
+        self.tree.setModel(self.fs_model)
+        self.tree.setSortingEnabled(True)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.sortByColumn(0, Qt.AscendingOrder)
+        self.tree.header().hide()
+        self.tree.setAttribute(Qt.WA_StyledBackground, True)
+        self.tree.setFrameShape(QTreeView.NoFrame)
+        self.tree.setIndentation(15)
+        self.tree.setRootIsDecorated(False)
+
+        for col in range(1, self.fs_model.columnCount()):
+            self.tree.hideColumn(col)
+
+        self.tree_delegate = DirectoryBrowserDelegate(self.tree, self.tree)
+        self.tree.setItemDelegate(self.tree_delegate)
+        self.tree.setStyleSheet(self.get_tree_style("#3399ff", "white"))
+        self.tree.viewport().setAttribute(Qt.WA_StyledBackground, True)
+        self.tree.expanded.connect(self._on_tree_expanded)
+
+        self.album_art = AlbumArtLabel()
+        self.album_art.setStyleSheet("QLabel { background: palette(base); border: none; border-radius: 8px; }")
+
+        self.left_splitter = QSplitter(Qt.Vertical)
+        self.left_splitter.setHandleWidth(7)
+        self.left_splitter.setStyleSheet("QSplitter::handle { background-color: transparent; }")
+        self.left_splitter.addWidget(self.tree)
+        self.left_splitter.addWidget(self.album_art)
+        self.left_splitter.setSizes([400, 200])
+        self.left_splitter.setContentsMargins(0, 0, 0, 0)
+
+        self.splitter.addWidget(self.left_splitter)
+
+    def _on_tree_expanded(self, index):
+        QTimer.singleShot(0, lambda: self.tree.scrollTo(index, QAbstractItemView.PositionAtCenter))
+
+    def _setup_right_panel(self):
+        """Setup playlist table."""
+        playlist_container = QWidget()
+        playlist_layout = QVBoxLayout(playlist_container)
+        playlist_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.playlist_model = PlaylistModel(controller=None, icons=self.icons)
+        self.playlist = PlaylistView(get_asset_path("logo.png"))
+        self.playlist.setModel(self.playlist_model)
+        self.playlist.setSelectionBehavior(QTableView.SelectRows)
+        self.playlist.setAlternatingRowColors(True)
+        self.playlist.setIconSize(QSize(16, 16))
+        self.playlist.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.playlist.setAttribute(Qt.WA_StyledBackground, True)
+        self.playlist.setFrameShape(QTableView.NoFrame)
+        self.playlist.setStyleSheet(self.get_playlist_style())
+        self.playlist.viewport().setAttribute(Qt.WA_StyledBackground, True)
+
+        header = self.playlist.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionsMovable(False)
+        header.setSectionsClickable(False)
+        for col in range(len(PlaylistModel.HEADERS)):
+            header.setSectionResizeMode(col, QHeaderView.Interactive)
+
+        self.delegate = PlayingRowDelegate(self.playlist_model, self.playlist)
+        self.playlist.setItemDelegate(self.delegate)
+
+        playlist_layout.addWidget(self.playlist)
+        self.splitter.addWidget(playlist_container)
+
+        self.controller = AudioPlayerController(self.playlist)
+        self.controller.set_model(self.playlist_model)
+        self.playlist_model.controller = self.controller
+        self.tree.playlist_model = self.playlist_model
+
+    def _setup_bottom_controls(self, parent_layout):
+        """Setup playback controls, progress bar, volume, and equalizer."""
+        bottom_layout = QVBoxLayout()
+        parent_layout.addLayout(bottom_layout)
+
+        controls = QHBoxLayout()
+        controls.addStretch(1)
+        
+        self.btn_prev = self._create_button(get_themed_icon("prev.svg"), 24)
+        self.btn_playpause = self._create_button(get_themed_icon("play.svg"), 24)
+        self.btn_stop = self._create_button(get_themed_icon("stop.svg"), 24)
+        self.btn_next = self._create_button(get_themed_icon("next.svg"), 24)
+        
+        for btn in [self.btn_prev, self.btn_playpause, self.btn_stop, self.btn_next]:
+            btn.setStyleSheet(self.get_button_style())
+            controls.addWidget(btn)
+        
+        controls.addStretch(1)
+        bottom_layout.addLayout(controls)
+
+        progress_row = QHBoxLayout()
+        
+        self.progress_slider = QSlider(Qt.Horizontal)
+        self.progress_slider.setRange(0, 1000)
+        self.progress_slider.setStyleSheet(self.get_slider_style())
+        
+        self.lbl_time = QLabel("0:00 / 0:00")
+        self.lbl_time.setStyleSheet("QLabel { color: #555; font-size: 12px; font-weight: 500; }")
+        
+        progress_row.addWidget(self.progress_slider, 3)
+        progress_row.addWidget(self.lbl_time)
+        progress_row.addSpacing(15)
+
+        self.lbl_vol = QLabel("Volume:")
+        self.lbl_vol.setStyleSheet("QLabel { color: #555; font-size: 12px; font-weight: 500; }")
+        
+        self.slider_vol = QSlider(Qt.Horizontal)
+        self.slider_vol.setRange(0, 100)
+        self.slider_vol.setValue(70)
+        self.slider_vol.setStyleSheet(self.get_slider_style())
+        
+        progress_row.addWidget(self.lbl_vol)
+        progress_row.addWidget(self.slider_vol)
+        bottom_layout.addLayout(progress_row)
+
+        self.equalizer = EqualizerWidget(bar_count=70, segments=15)
+        self.equalizer.setFixedHeight(120)
+        bottom_layout.addWidget(self.equalizer)
+
+        self.controller.set_equalizer(self.equalizer)
+
+        self.timer = QTimer(self)
+        self.timer.setInterval(PROGRESS_UPDATE_INTERVAL_MS)
+        self.timer.timeout.connect(self.update_progress)
+        self.timer.start()
+
+    def _setup_menu_bar(self):
+        """Setup application menu bar."""
+        self.menuBar().setStyleSheet("""
+            QMenu {
+                border: 1px solid palette(mid);
+                background-color: palette(base);
+            }
+            QMenu::item {
+                padding: 4px 20px;
+            }
+        """)
+        
+        file_menu = self.menuBar().addMenu("&File")
+        
+        act_open = QAction("Open folder…", self)
+        act_open.triggered.connect(self.on_add_folder_clicked)
+        file_menu.addAction(act_open)
+
+        choose_default_act = QAction("Choose default folder…", self)
+        choose_default_act.triggered.connect(self.on_choose_default_folder)
+        file_menu.addAction(choose_default_act)
+
+        self.reset_default_act = QAction("Reset default folder", self)
+        self.reset_default_act.triggered.connect(self.on_reset_default_folder)
+        file_menu.addAction(self.reset_default_act)
+
+        view_menu = self.menuBar().addMenu("&View")
+        
+        act_color = QAction("Set accent colour", self)
+        act_color.triggered.connect(self.on_choose_highlight_color)
+        view_menu.addAction(act_color)
+        
+        view_menu.addSeparator()
+        
+        act_peak_color = QAction("Set peak indicator colour…", self)
+        act_peak_color.triggered.connect(self.on_choose_peak_color)
+        view_menu.addAction(act_peak_color)
+        
+        self.reset_peak_color_act = QAction("Reset peak indicator colour", self)
+        self.reset_peak_color_act.triggered.connect(self.on_reset_peak_color)
+        self.reset_peak_color_act.setEnabled(False)
+        view_menu.addAction(self.reset_peak_color_act)
+        
+        act_peak_transparency = QAction("Adjust peak indicator transparency…", self)
+        act_peak_transparency.triggered.connect(self.on_adjust_peak_transparency)
+        view_menu.addAction(act_peak_transparency)
+        
+        view_menu.addSeparator()
+        
+        act_playlist_font = QAction("Set playlist font…", self)
+        act_playlist_font.triggered.connect(self.on_set_playlist_font)
+        view_menu.addAction(act_playlist_font)
+        
+        act_browser_font = QAction("Set directory browser font…", self)
+        act_browser_font.triggered.connect(self.on_set_browser_font)
+        view_menu.addAction(act_browser_font)
+
+    def _setup_connections(self):
+        """Connect signals and slots."""
+        self.btn_playpause.clicked.connect(self.on_playpause_clicked)
+        self.btn_stop.clicked.connect(self.on_stop_clicked)
+        self.btn_prev.clicked.connect(self.on_prev_clicked)
+        self.btn_next.clicked.connect(self.on_next_clicked)
+        self.slider_vol.valueChanged.connect(self.on_volume_changed)
+        self.progress_slider.sliderReleased.connect(self.on_seek)
+        self.tree.doubleClicked.connect(self.on_tree_double_click)
+        self.tree.expanded.connect(self.on_tree_expanded)
+        self.playlist.doubleClicked.connect(self.on_playlist_double_click)
+        self.on_volume_changed(self.slider_vol.value())
+
+    def _setup_keyboard_shortcuts(self):
+        """Setup keyboard shortcuts."""
+        QShortcut(QKeySequence(Qt.Key_Space), self).activated.connect(self.on_playpause_clicked)
+        QShortcut(QKeySequence(Qt.Key_Left), self).activated.connect(self.on_prev_clicked)
+        QShortcut(QKeySequence(Qt.Key_Right), self).activated.connect(self.on_next_clicked)
+        
+        try:
+            QShortcut(QKeySequence(Qt.Key_MediaPlay), self).activated.connect(self.on_playpause_clicked)
+            QShortcut(QKeySequence(Qt.Key_MediaTogglePlayPause), self).activated.connect(self.on_playpause_clicked)
+            QShortcut(QKeySequence(Qt.Key_MediaPause), self).activated.connect(self.on_playpause_clicked)
+            QShortcut(QKeySequence(Qt.Key_MediaStop), self).activated.connect(self.on_stop_clicked)
+            QShortcut(QKeySequence(Qt.Key_MediaNext), self).activated.connect(self.on_next_clicked)
+            QShortcut(QKeySequence(Qt.Key_MediaPrevious), self).activated.connect(self.on_prev_clicked)
+        except Exception as e:
+            print(f"Some media key shortcuts unavailable: {e}")
+
+    def _setup_vlc_events(self):
+        """Setup VLC player event handlers."""
+        event_manager = self.controller.player.event_manager()
+        event_manager.event_attach(vlc.EventType.MediaPlayerPlaying, lambda e: self.on_playing())
+        event_manager.event_attach(vlc.EventType.MediaPlayerPaused, lambda e: self.on_paused())
+        event_manager.event_attach(vlc.EventType.MediaPlayerStopped, lambda e: self.on_stopped())
+
+    def _create_button(self, icon_or_path, icon_size):
+        """Helper to create a button with an icon."""
+        button = QPushButton()
+        if isinstance(icon_or_path, QIcon):
+            button.setIcon(icon_or_path)
+        else:
+            button.setIcon(QIcon(icon_or_path))
+        button.setIconSize(QSize(icon_size, icon_size))
+        return button
+
+    # Playback event handlers
+    def on_playing(self):
+        self.update_playback_ui()
+        self.update_playpause_icon()
+
+    def on_paused(self):
+        self.update_playback_ui()
+        self.update_playpause_icon()
+
+    def on_stopped(self):
+        self.update_playback_ui()
+        self.update_playpause_icon()
+        if self.equalizer:
+            QTimer.singleShot(0, lambda: self.equalizer.stop(clear_display=True))
+
+    # UI update methods
+    def update_album_art(self, filepath):
+        pixmap = extract_album_art(filepath)
+        if pixmap:
+            self.album_art.set_album_pixmap(pixmap)
+        else:
+            self.album_art.clear()
+            self.album_art._original_pixmap = None
+
+    def update_playpause_icon(self):
+        if self.controller.player.is_playing():
+            self.btn_playpause.setIcon(self.icons["ctrl_pause"])
+        else:
+            self.btn_playpause.setIcon(self.icons["ctrl_play"])
+
+    def update_playback_ui(self):
+        self.playlist.viewport().update()
+
+    def update_slider_colors(self):
+        if not self.playlist_model.highlight_color:
+            return
+        
+        color_name = self.playlist_model.highlight_color.name()
+        slider_style = f"""
+            QSlider::groove:horizontal {{
+                border: 1px solid #999;
+                height: 6px;
+                background: {color_name};
+                border-radius: 3px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {color_name};
+                border: 1px solid #666;
+                width: 14px;
+                height: 14px;
+                margin: -5px 0;
+                border-radius: 7px;
+            }}
+        """
+        self.progress_slider.setStyleSheet(slider_style)
+        self.slider_vol.setStyleSheet(slider_style)
+        self.equalizer.update_color(self.playlist_model.highlight_color)
+
+    def update_tree_stylesheet(self, color):
+        text_color = "white" if is_dark_color(color) else "black"
+        self.tree.setStyleSheet(self.get_tree_style(color.name(), text_color))
+
+    def update_reset_action_state(self):
+        self.reset_default_act.setEnabled(self.settings.contains("default_dir"))
+
+    # Playback control handlers
+    def on_playpause_clicked(self):
+        if self.controller.gapless_manager.is_playing():
+            self.controller.pause()
+        else:
+            if self.playlist_model.rowCount() > 0:
+                if self.controller.current_index == -1:
+                    self.controller.play_index(0)
+                else:
+                    self.controller.play()
+        self.update_playback_ui()
+        self.update_playpause_icon()
+
+    def on_stop_clicked(self):
+        self.controller.stop()
+        self.update_playback_ui()
+
+    def on_prev_clicked(self):
+        self.controller.previous()
+        self.update_playback_ui()
+
+    def on_next_clicked(self):
+        self.controller.next()
+        self.update_playback_ui()
+
+    def on_volume_changed(self, volume):
+        self.controller.set_volume(volume)
+
+    def on_seek(self):
+        if self.controller.gapless_manager and self.controller.gapless_manager.is_playing():
+            length = self.controller.gapless_manager.get_length()
+            if length > 0:
+                position = self.progress_slider.value() / 1000.0
+                self.controller.gapless_manager.set_time(int(length * position))
+
+    def update_progress(self):
+        if not self.controller.gapless_manager:
+            return
+        
+        length = self.controller.gapless_manager.get_length()
+        current = self.controller.gapless_manager.get_time()
+        
+        if length > 0 and current >= 0:
+            position = current / length
+            self.progress_slider.blockSignals(True)
+            self.progress_slider.setValue(int(position * 1000))
+            self.progress_slider.blockSignals(False)
+            
+            current_str = self.format_time(current)
+            length_str = self.format_time(length)
+            self.lbl_time.setText(f"{current_str} / {length_str}")
+
+    @staticmethod
+    def format_time(milliseconds):
+        seconds = milliseconds // 1000
+        minutes, seconds = divmod(seconds, 60)
+        return f"{minutes}:{seconds:02d}"
+
+    # File browser handlers
+    def on_tree_double_click(self, index):
+        path = self.fs_model.filePath(index)
+        
+        if os.path.isfile(path):
+            if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
+                self.playlist_model.add_tracks([path], clear=True)
+                self.controller.play_index(0)
+                self.update_playback_ui()
+        elif os.path.isdir(path):
+            playlist_is_empty = self.playlist_model.rowCount() == 0
+            
+            if playlist_is_empty:
+                files = self._get_audio_files_from_directory(path)
+                if files:
+                    self.playlist_model.add_tracks(files, clear=True)
+                    self.controller.play_index(0)
+                    self.update_playback_ui()
+                    return
+
+    def on_tree_expanded(self, index):
+        parent = index.parent()
+        for row in range(self.fs_model.rowCount(parent)):
+            sibling = self.fs_model.index(row, 0, parent)
+            if sibling != index and self.tree.isExpanded(sibling):
+                self.tree.collapse(sibling)
+
+    # Playlist handlers
+    def on_playlist_double_click(self, index):
+        self.controller.play_index(index.row())
+        self.update_playback_ui()
+
+    # Menu action handlers
+    def on_set_playlist_font(self):
+        if self.playlist_font_dialog is None or not self.playlist_font_dialog.isVisible():
+            current_font = self.playlist.font()
+            self.playlist_font_dialog = FontSelectionDialog(
+                current_font, "Playlist Font Selection", self
+            )
+            self.playlist_font_dialog.font_changed.connect(self._on_playlist_font_changed)
+        self.playlist_font_dialog.show()
+        self.playlist_font_dialog.raise_()
+        self.playlist_font_dialog.activateWindow()
+    
+    def _on_playlist_font_changed(self, font):
+        self.playlist.setFont(font)
+        self.settings.setValue("playlistFontFamily", font.family())
+        self.settings.setValue("playlistFontSize", font.pointSize())
+        self.playlist.viewport().update()
+    
+    def on_set_browser_font(self):
+        if self.browser_font_dialog is None or not self.browser_font_dialog.isVisible():
+            current_font = self.tree.font()
+            self.browser_font_dialog = FontSelectionDialog(
+                current_font, "Directory Browser Font Selection", self
+            )
+            self.browser_font_dialog.font_changed.connect(self._on_browser_font_changed)
+        self.browser_font_dialog.show()
+        self.browser_font_dialog.raise_()
+        self.browser_font_dialog.activateWindow()
+    
+    def _on_browser_font_changed(self, font):
+        self.tree.setFont(font)
+        self.settings.setValue("browserFontFamily", font.family())
+        self.settings.setValue("browserFontSize", font.pointSize())
+        self.tree.viewport().update()
+    
+    def on_adjust_peak_transparency(self):
+        if self.peak_transparency_dialog is None or not self.peak_transparency_dialog.isVisible():
+            current_alpha = self.equalizer.peak_alpha
+            self.peak_transparency_dialog = PeakTransparencyDialog(current_alpha, self)
+            self.peak_transparency_dialog.transparency_changed.connect(self._on_peak_transparency_changed)
+        self.peak_transparency_dialog.show()
+        self.peak_transparency_dialog.raise_()
+        self.peak_transparency_dialog.activateWindow()
+    
+    def _on_peak_transparency_changed(self, alpha):
+        self.equalizer.set_peak_alpha(alpha)
+        self.settings.setValue("peakAlpha", alpha)
+    
+    def on_choose_peak_color(self):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.equalizer.set_peak_color(color)
+            self.settings.setValue("peakColor", color.name())
+            self.reset_peak_color_act.setEnabled(True)
+            self.statusBar().showMessage(f"Peak indicator colour set to {color.name()}", 3000)
+                
+    def on_reset_peak_color(self):
+        reply = QMessageBox.question(
+            self, "Reset Peak Indicator Colour",
+            "Reset peak indicator colour to automatic?\n\n"
+            "The peaks will automatically complement the accent colour.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.equalizer.reset_peak_color()
+            self.settings.remove("peakColor")
+            self.reset_peak_color_act.setEnabled(False)
+    
+    def on_add_folder_clicked(self):
+        folder = QFileDialog.getExistingDirectory(self, "Choose music folder", QDir.homePath())
+        if not folder:
+            return
+        
+        files = self._get_audio_files_from_directory(folder)
+        if files:
+            self.playlist_model.add_tracks(files, clear=True)
+            if self.playlist_model.rowCount() > 0:
+                self.controller.play_index(0)
+        self.update_playback_ui()
+
+    def on_choose_default_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select default music folder", QDir.rootPath()
+        )
+        if folder:
+            self.settings.setValue("default_dir", folder)
+            self.fs_model.setRootPath(folder)
+            self.tree.setRootIndex(self.fs_model.index(folder))
+            self.statusBar().showMessage(f"Default folder set to {folder}", 3000)
+            self.update_reset_action_state()
+
+    def on_reset_default_folder(self):
+        if not self.settings.contains("default_dir"):
+            self.statusBar().showMessage("No default folder set", 3000)
+            return
+        
+        reply = QMessageBox.question(
+            self, "Reset Default Folder",
+            "Are you sure you want to reset the default folder?\n\n"
+            "This will revert the browser to showing all drives.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.settings.remove("default_dir")
+            root = QDir.rootPath()
+            self.fs_model.setRootPath(root)
+            self.tree.setRootIndex(self.fs_model.index(root))
+            self.statusBar().showMessage("Default folder reset – showing all drives", 3000)
+            self.update_reset_action_state()
+
+    def on_choose_highlight_color(self):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.playlist_model.highlight_color = color
+            self.tree_delegate.set_highlight_color(color)
+            self.update_tree_stylesheet(color)
+            self.settings.setValue("highlightColor", color.name())
+            self.update_playback_ui()
+            self.update_slider_colors()
+            self.equalizer.update_color(color)
+
+    # Helper methods
+    def _get_audio_files_from_directory(self, directory):
+        files = []
+        try:
+            for name in sorted(os.listdir(directory)):
+                path = os.path.join(directory, name)
+                if os.path.isfile(path):
+                    if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
+                        files.append(path)
+        except PermissionError:
+            self.statusBar().showMessage("Permission denied for this folder", 3000)
+        return files
+    
+    def _auto_populate_playlist_on_startup(self, directory):
+        """Auto-populate playlist if default directory is a flat folder with audio files."""
+        if not os.path.isdir(directory):
+            return
+        
+        try:
+            has_subdirs = False
+            audio_files = []
+            
+            for name in sorted(os.listdir(directory)):
+                path = os.path.join(directory, name)
+                if os.path.isdir(path):
+                    has_subdirs = True
+                    break
+                elif os.path.isfile(path):
+                    if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
+                        audio_files.append(path)
+            
+            if not has_subdirs and audio_files:
+                self.playlist_model.add_tracks(audio_files, clear=True)
+                print(f"Auto-populated playlist with {len(audio_files)} tracks")
+        except (PermissionError, OSError) as e:
+            print(f"Could not auto-populate playlist: {e}")
+
+    # Settings persistence
+    def restore_settings(self):
+        """Restore saved settings from previous session."""
+        color_name = self.settings.value("highlightColor")
+        if color_name:
+            color = QColor(color_name)
+            if color.isValid():
+                self.playlist_model.highlight_color = color
+                self.tree_delegate.set_highlight_color(color)
+                self.update_tree_stylesheet(color)
+                self.update_slider_colors()
+                self.equalizer.update_color(color)
+        
+        peak_color_name = self.settings.value("peakColor")
+        if peak_color_name:
+            peak_color = QColor(peak_color_name)
+            if peak_color.isValid():
+                self.equalizer.set_peak_color(peak_color)
+                self.reset_peak_color_act.setEnabled(True)
+        else:
+            self.reset_peak_color_act.setEnabled(False)
+        
+        if self.settings.contains("peakAlpha"):
+            peak_alpha = int(self.settings.value("peakAlpha"))
+            self.equalizer.set_peak_alpha(peak_alpha)
+
+        if self.settings.contains("playlistFontFamily"):
+            font_family = self.settings.value("playlistFontFamily")
+            font_size = int(self.settings.value("playlistFontSize", 10))
+            self.playlist.setFont(QFont(font_family, font_size))
+        
+        if self.settings.contains("browserFontFamily"):
+            font_family = self.settings.value("browserFontFamily")
+            font_size = int(self.settings.value("browserFontSize", 10))
+            self.tree.setFont(QFont(font_family, font_size))
+
+        if self.settings.contains("geometry"):
+            self.restoreGeometry(self.settings.value("geometry"))
+        if self.settings.contains("leftSplitterState"):
+            self.left_splitter.restoreState(self.settings.value("leftSplitterState"))
+        if self.settings.contains("windowState"):
+            self.restoreState(self.settings.value("windowState"))
+        if self.settings.contains("splitterState"):
+            self.splitter.restoreState(self.settings.value("splitterState"))
+        if self.settings.contains("playlistHeader"):
+            self.playlist.horizontalHeader().restoreState(self.settings.value("playlistHeader"))
+        
+        if self.settings.contains("volume"):
+            vol = int(self.settings.value("volume"))
+            self.slider_vol.setValue(vol)
+            self.on_volume_changed(vol)
+
+    def closeEvent(self, event):
+        """Save settings on application close."""
+        if self.global_media_handler:
+            self.global_media_handler.cleanup()
+            if sys.platform == 'win32':
+                QApplication.instance().removeNativeEventFilter(self.global_media_handler)
+        
+        self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.setValue("leftSplitterState", self.left_splitter.saveState())
+        self.settings.setValue("windowState", self.saveState())
+        self.settings.setValue("splitterState", self.splitter.saveState())
+        self.settings.setValue("playlistHeader", self.playlist.horizontalHeader().saveState())
+        self.settings.setValue("volume", self.slider_vol.value())
+        super().closeEvent(event)
+
+# ============================================================================
+# APPLICATION ENTRY POINT
+# ============================================================================
+
+def main():
+    """Main application entry point."""
+    if sys.platform == 'win32':
+        try:
+            myappid = u"litheplayer.audio.app"
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except Exception:
+            pass
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("Lithe Player")
+    app.setWindowIcon(QIcon(get_asset_path("icon.ico")))
+
+    splash_pix = QPixmap(get_asset_path("splash.png"))
+    splash = QSplashScreen(splash_pix)
+    splash.show()
+    app.processEvents()
+
+    window = MainWindow()
+
+    QTimer.singleShot(SPLASH_SCREEN_DURATION_MS, 
+                     lambda: (splash.finish(window), window.show()))
+
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
+
