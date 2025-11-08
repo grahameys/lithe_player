@@ -2472,59 +2472,83 @@ class MainWindow(QMainWindow):
     def _setup_menu_bar(self):
         """Setup application menu bar."""
         self.menuBar().setStyleSheet("""
+            QMenuBar {
+                font-size: 9pt;
+            }
             QMenu {
                 border: 1px solid palette(mid);
                 background-color: palette(base);
+                font-size: 9pt;
             }
             QMenu::item {
                 padding: 4px 20px;
             }
         """)
         
+        # File menu
         file_menu = self.menuBar().addMenu("&File")
         
-        act_open = QAction("Open folder…", self)
+        act_open = QAction("&Open Folder...", self)
+        act_open.setStatusTip("Browse and open a music folder")
         act_open.triggered.connect(self.on_add_folder_clicked)
         file_menu.addAction(act_open)
-
-        choose_default_act = QAction("Choose default folder…", self)
+        
+        file_menu.addSeparator()
+        
+        choose_default_act = QAction("Set &Default Folder...", self)
+        choose_default_act.setStatusTip("Choose the default startup folder")
         choose_default_act.triggered.connect(self.on_choose_default_folder)
         file_menu.addAction(choose_default_act)
 
-        self.reset_default_act = QAction("Reset default folder", self)
+        self.reset_default_act = QAction("&Reset Default Folder", self)
+        self.reset_default_act.setStatusTip("Clear the default folder setting")
         self.reset_default_act.triggered.connect(self.on_reset_default_folder)
         file_menu.addAction(self.reset_default_act)
 
-        view_menu = self.menuBar().addMenu("&View")
+        # Appearance menu
+        appearance_menu = self.menuBar().addMenu("&Appearance")
         
-        act_color = QAction("Set accent colour", self)
+        # Theme submenu
+        theme_submenu = appearance_menu.addMenu("&Theme")
+        
+        act_color = QAction("&Accent Color...", self)
+        act_color.setStatusTip("Customize the accent color")
         act_color.triggered.connect(self.on_choose_highlight_color)
-        view_menu.addAction(act_color)
+        theme_submenu.addAction(act_color)
         
-        view_menu.addSeparator()
+        # Equalizer submenu
+        equalizer_submenu = appearance_menu.addMenu("&Equalizer")
         
-        act_peak_color = QAction("Set peak indicator colour…", self)
+        act_peak_color = QAction("Peak &Color...", self)
+        act_peak_color.setStatusTip("Set custom color for peak indicators")
         act_peak_color.triggered.connect(self.on_choose_peak_color)
-        view_menu.addAction(act_peak_color)
+        equalizer_submenu.addAction(act_peak_color)
         
-        self.reset_peak_color_act = QAction("Reset peak indicator colour", self)
+        self.reset_peak_color_act = QAction("&Reset Peak Color", self)
+        self.reset_peak_color_act.setStatusTip("Reset peak color to automatic")
         self.reset_peak_color_act.triggered.connect(self.on_reset_peak_color)
         self.reset_peak_color_act.setEnabled(False)
-        view_menu.addAction(self.reset_peak_color_act)
+        equalizer_submenu.addAction(self.reset_peak_color_act)
         
-        act_peak_transparency = QAction("Adjust peak indicator transparency…", self)
+        equalizer_submenu.addSeparator()
+        
+        act_peak_transparency = QAction("Peak &Transparency...", self)
+        act_peak_transparency.setStatusTip("Adjust the transparency of peak indicators")
         act_peak_transparency.triggered.connect(self.on_adjust_peak_transparency)
-        view_menu.addAction(act_peak_transparency)
+        equalizer_submenu.addAction(act_peak_transparency)
         
-        view_menu.addSeparator()
+        # Fonts submenu
+        fonts_submenu = appearance_menu.addMenu("&Fonts")
         
-        act_playlist_font = QAction("Set playlist font…", self)
+        act_playlist_font = QAction("&Playlist Font...", self)
+        act_playlist_font.setStatusTip("Change the playlist font")
         act_playlist_font.triggered.connect(self.on_set_playlist_font)
-        view_menu.addAction(act_playlist_font)
+        fonts_submenu.addAction(act_playlist_font)
         
-        act_browser_font = QAction("Set directory browser font…", self)
+        act_browser_font = QAction("&Browser Font...", self)
+        act_browser_font.setStatusTip("Change the file browser font")
         act_browser_font.triggered.connect(self.on_set_browser_font)
-        view_menu.addAction(act_browser_font)
+        fonts_submenu.addAction(act_browser_font)
 
     def _setup_connections(self):
         """Connect signals and slots."""
