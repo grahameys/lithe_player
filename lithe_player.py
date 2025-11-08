@@ -2670,11 +2670,11 @@ class MainWindow(QMainWindow):
         
         app = QApplication.instance()
         if not app:
-            # Default to light theme
+            # Default to light theme - match playlist colors
             return f"""
                 QTreeView {{
-                    background-color: #fafafa;
-                    alternate-background-color: #f0f0f0;
+                    background-color: rgba(255, 255, 255, 150);
+                    alternate-background-color: rgba(240, 240, 240, 150);
                     border: none;
                     border-radius: 8px;
                     color: #000000;
@@ -2752,13 +2752,19 @@ class MainWindow(QMainWindow):
         
         if is_dark:
             hover_bg = base_color.lighter(120).name()
+            # Match playlist - semi-transparent with lighter(110)
+            alternate_bg = f"rgba({base_color.lighter(110).red()}, {base_color.lighter(110).green()}, {base_color.lighter(110).blue()}, 150)"
+            bg = f"rgba({base_color.red()}, {base_color.green()}, {base_color.blue()}, 150)"
         else:
             hover_bg = "#dceeff"
+            # Match playlist - semi-transparent light colors
+            alternate_bg = "rgba(240, 240, 240, 150)"
+            bg = "rgba(255, 255, 255, 150)"
         
         return f"""
             QTreeView {{
-                background-color: {base_color.name()};
-                alternate-background-color: {base_color.lighter(105).name() if not is_dark else base_color.darker(105).name()};
+                background-color: {bg};
+                alternate-background-color: {alternate_bg};
                 border: none;
                 border-radius: 8px;
                 color: {text_color.name()};
@@ -3115,7 +3121,12 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central)
 
         self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.setHandleWidth(5)  # 5px gap between browser/album art and playlist
+        self.splitter.setHandleWidth(7)  # Visible grey gap
+        self.splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: transparent;
+            }
+        """)
         main_layout.addWidget(self.splitter)
 
         self._setup_left_panel()
@@ -3175,12 +3186,18 @@ class MainWindow(QMainWindow):
         """)
 
         self.left_splitter = QSplitter(Qt.Vertical)
+        self.left_splitter.setHandleWidth(7)  # Match horizontal splitter gap
+        self.left_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: transparent;
+            }
+        """)
         self.left_splitter.addWidget(self.tree)
         self.left_splitter.addWidget(self.album_art)
         self.left_splitter.setSizes([400, 200])
         
-        # Set margins for rounded corner visibility
-        self.left_splitter.setContentsMargins(2, 2, 2, 2)
+        # Remove margins - splitter handle provides spacing
+        self.left_splitter.setContentsMargins(0, 0, 0, 0)
 
         self.splitter.addWidget(self.left_splitter)
 
@@ -3194,7 +3211,7 @@ class MainWindow(QMainWindow):
         """Setup playlist table."""
         playlist_container = QWidget()
         playlist_layout = QVBoxLayout(playlist_container)
-        playlist_layout.setContentsMargins(2, 2, 2, 2)
+        playlist_layout.setContentsMargins(0, 0, 0, 0)
 
         self.playlist_model = PlaylistModel(controller=None, icons=self.icons)
         self.playlist = PlaylistView(get_asset_path("logo.png"))
