@@ -953,6 +953,10 @@ class PlaylistModel(QAbstractTableModel):
 
     def path_at(self, row):
         return self._tracks[row]["path"] if 0 <= row < len(self._tracks) else None
+    
+    def get_filepath(self, row):
+        """Get the file path for a track at the given row."""
+        return self.path_at(row)
 
     def set_current_index(self, row):
         if self.current_index == row:
@@ -2962,6 +2966,73 @@ class MainWindow(QMainWindow):
             vol = int(self.settings.value("volume"))
             self.slider_vol.setValue(vol)
             self.on_volume_changed(vol)
+        
+        # Restore playlist contents and current track
+        self._restore_playlist_state()
+    
+    def _save_playlist_state(self):
+        """Save current playlist contents and playing track."""
+        if self.playlist_model.rowCount() == 0:
+            # No playlist to save
+            self.settings.remove("playlistTracks")
+            self.settings.remove("currentTrackIndex")
+            return
+        
+        # Save all track file paths
+        track_paths = []
+        for row in range(self.playlist_model.rowCount()):
+            filepath = self.playlist_model.get_filepath(row)
+            if filepath:
+                track_paths.append(filepath)
+        
+        self.settings.setValue("playlistTracks", json.dumps(track_paths))
+        
+        # Save current track index
+        current_index = self.controller.current_index
+        if current_index >= 0:
+            self.settings.setValue("currentTrackIndex", current_index)
+        else:
+            self.settings.remove("currentTrackIndex")
+    
+    def _restore_playlist_state(self):
+        """Restore playlist contents and highlight last track from previous session."""
+        if not self.settings.contains("playlistTracks"):
+            return
+        
+        try:
+            track_paths_json = self.settings.value("playlistTracks")
+            track_paths = json.loads(track_paths_json)
+            
+            # Filter out tracks that no longer exist
+            valid_tracks = [path for path in track_paths if os.path.exists(path)]
+            
+            if not valid_tracks:
+                return
+            
+            # Load tracks into playlist
+            self.playlist_model.add_tracks(valid_tracks, clear=True)
+            
+            # Restore and select the last track index if available
+            if self.settings.contains("currentTrackIndex"):
+                saved_index = int(self.settings.value("currentTrackIndex"))
+                
+                # Ensure the index is still valid
+                if 0 <= saved_index < self.playlist_model.rowCount():
+                    # Set it as the current track in the model (shows with accent color)
+                    self.playlist_model.set_current_index(saved_index)
+                    self.controller.current_index = saved_index
+                    
+                    # Also select it in the playlist view
+                    self.playlist.selectRow(saved_index)
+                    self.playlist.scrollTo(self.playlist_model.index(saved_index, 0))
+                    
+                    # Update album art for the track
+                    filepath = self.playlist_model.get_filepath(saved_index)
+                    if filepath:
+                        self.update_album_art(filepath)
+                    
+        except (json.JSONDecodeError, ValueError, Exception) as e:
+            print(f"Error restoring playlist: {e}")
 
     def closeEvent(self, event):
         """Save settings on application close."""
@@ -2969,6 +3040,9 @@ class MainWindow(QMainWindow):
             self.global_media_handler.cleanup()
             if sys.platform == 'win32':
                 QApplication.instance().removeNativeEventFilter(self.global_media_handler)
+        
+        # Save playlist contents and current track
+        self._save_playlist_state()
         
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("leftSplitterState", self.left_splitter.saveState())
