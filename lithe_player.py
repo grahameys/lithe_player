@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QFileSystemModel, QHeaderView,
     QLabel, QSlider, QFileDialog, QMessageBox, QColorDialog,
     QStyledItemDelegate, QStyleOptionViewItem, QStyle, QSizePolicy,
-    QAbstractItemView, QSplashScreen, QMenu, QFontComboBox
+    QAbstractItemView, QSplashScreen, QMenu, QFontComboBox, QFileIconProvider
 )
 from PySide6 import QtSvg
 from PySide6.QtSvg import QSvgRenderer
@@ -229,6 +229,57 @@ class JsonSettings:
         if key in self._settings:
             del self._settings[key]
             self._save()
+
+# ============================================================================
+# CUSTOM FILE ICON PROVIDER
+# ============================================================================
+
+class CustomFileIconProvider(QFileIconProvider):
+    """Custom icon provider for file browser with theme-aware icons."""
+    
+    def __init__(self):
+        super().__init__()
+        self._update_icons()
+    
+    def _update_icons(self):
+        """Load icons based on current theme."""
+        app = QApplication.instance()
+        if app:
+            palette = app.palette()
+            base_color = palette.color(QPalette.Base)
+            is_dark = is_dark_color(base_color)
+        else:
+            is_dark = False
+        
+        # Load appropriate icons based on theme
+        if is_dark:
+            self.dir_icon = QIcon(get_asset_path("dirwhite.svg"))
+            self.file_icon = QIcon(get_asset_path("filewhite.svg"))
+        else:
+            self.dir_icon = QIcon(get_asset_path("dir.svg"))
+            self.file_icon = QIcon(get_asset_path("file.svg"))
+    
+    def icon(self, type_or_info):
+        """Return custom icon for directories and audio files."""
+        # Handle QFileInfo parameter
+        if hasattr(type_or_info, 'isDir'):
+            file_info = type_or_info
+            
+            # Directory icon
+            if file_info.isDir():
+                return self.dir_icon
+            
+            # Audio file icon
+            suffix = file_info.suffix().lower()
+            if suffix in ['mp3', 'flac', 'wav', 'ogg', 'opus', 'aac']:
+                return self.file_icon
+        
+        # Fall back to default icons for other file types
+        return super().icon(type_or_info)
+    
+    def update_theme(self):
+        """Update icons when theme changes."""
+        self._update_icons()
 
 # ============================================================================
 # VLC SETUP
@@ -2285,6 +2336,10 @@ class MainWindow(QMainWindow):
         """Setup file browser and album art display."""
         self.fs_model = QFileSystemModel()
         self.fs_model.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
+        
+        # Set custom icon provider for directories and audio files
+        self.icon_provider = CustomFileIconProvider()
+        self.fs_model.setIconProvider(self.icon_provider)
 
         self.tree = DirectoryTreeView()
         self.tree.setModel(self.fs_model)
