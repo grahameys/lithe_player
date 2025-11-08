@@ -3309,6 +3309,17 @@ class MainWindow(QMainWindow):
 
     def _setup_menu_bar(self):
         """Setup application menu bar."""
+        # Remove shadow/border from menu dropdowns
+        self.menuBar().setStyleSheet("""
+            QMenu {
+                border: 1px solid palette(mid);
+                background-color: palette(base);
+            }
+            QMenu::item {
+                padding: 4px 20px;
+            }
+        """)
+        
         file_menu = self.menuBar().addMenu("&File")
         
         act_open = QAction("Open folder…", self)
