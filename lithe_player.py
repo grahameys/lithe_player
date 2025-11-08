@@ -64,7 +64,7 @@ DEFAULT_ANALYSIS_RATE = 44100
 ANALYSIS_CHUNK_SAMPLES = 2048
 PROGRESS_UPDATE_INTERVAL_MS = 500
 EQUALIZER_UPDATE_INTERVAL_MS = 30
-SPLASH_SCREEN_DURATION_MS = 3000
+SPLASH_SCREEN_DURATION_MS = 1500
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -2923,8 +2923,11 @@ def main():
 
     window = MainWindow()
 
-    QTimer.singleShot(SPLASH_SCREEN_DURATION_MS, 
-                     lambda: (splash.finish(window), window.show()))
+    def show_main_window():
+        splash.finish(window)
+        window.show()
+    
+    QTimer.singleShot(SPLASH_SCREEN_DURATION_MS, show_main_window)
 
     sys.exit(app.exec())
 
