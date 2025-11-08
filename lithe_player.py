@@ -1772,7 +1772,7 @@ class DirectoryBrowserDelegate(QStyledItemDelegate):
 # ============================================================================
 
 class AlbumArtLabel(QLabel):
-    """QLabel that rescales pixmap with aspect ratio."""
+    """QLabel that rescales pixmap with aspect ratio and rounded corners."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1780,6 +1780,8 @@ class AlbumArtLabel(QLabel):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(100, 100)
         self._original_pixmap = None
+        self._scaled_pixmap = None
+        self.border_radius = 8  # Rounded corner radius
 
     def set_album_pixmap(self, pixmap: QPixmap):
         """Set the album art pixmap."""
@@ -1792,13 +1794,43 @@ class AlbumArtLabel(QLabel):
         self._update_scaled_pixmap()
 
     def _update_scaled_pixmap(self):
-        """Update the scaled pixmap."""
+        """Update the scaled pixmap with rounded corners."""
         if self._original_pixmap:
             target_size = self.size().boundedTo(self._original_pixmap.size())
             scaled = self._original_pixmap.scaled(
                 target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-            super().setPixmap(scaled)
+            self._scaled_pixmap = scaled
+            self.update()  # Trigger paintEvent
+    
+    def paintEvent(self, event):
+        """Custom paint to draw rounded corners on the image."""
+        if self._scaled_pixmap:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            
+            # Calculate position to center the image
+            x = (self.width() - self._scaled_pixmap.width()) // 2
+            y = (self.height() - self._scaled_pixmap.height()) // 2
+            
+            # Create a rounded rect path for clipping
+            from PySide6.QtGui import QPainterPath
+            path = QPainterPath()
+            path.addRoundedRect(
+                x, y, 
+                self._scaled_pixmap.width(), 
+                self._scaled_pixmap.height(),
+                self.border_radius, 
+                self.border_radius
+            )
+            
+            # Clip to rounded rect and draw the image
+            painter.setClipPath(path)
+            painter.drawPixmap(x, y, self._scaled_pixmap)
+        else:
+            # No image - use default paint (shows background)
+            super().paintEvent(event)
 
 class DirectoryTreeView(QTreeView):
     """QTreeView with drag support for files and folders and context menu."""
@@ -1811,6 +1843,26 @@ class DirectoryTreeView(QTreeView):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
         self.playlist_model = None  # Will be set by MainWindow
+    
+    def showEvent(self, event):
+        """Apply rounded corner mask when shown."""
+        super().showEvent(event)
+        self._apply_rounded_mask()
+    
+    def resizeEvent(self, event):
+        """Reapply mask on resize."""
+        super().resizeEvent(event)
+        self._apply_rounded_mask()
+    
+    def _apply_rounded_mask(self):
+        """Apply a rounded rectangle mask to create rounded corners."""
+        from PySide6.QtGui import QRegion, QPainterPath
+        from PySide6.QtCore import QRectF
+        
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), 8, 8)
+        region = QRegion(path.toFillPolygon().toPolygon())
+        self.setMask(region)
     
     def _show_context_menu(self, position):
         """Show context menu for file/folder operations."""
@@ -2071,6 +2123,26 @@ class PlaylistView(QTableView):
         # Track for drag selection
         self._drag_selecting = False
         self._drag_start_row = -1
+    
+    def showEvent(self, event):
+        """Apply rounded corner mask when shown."""
+        super().showEvent(event)
+        self._apply_rounded_mask()
+    
+    def resizeEvent(self, event):
+        """Reapply mask on resize."""
+        super().resizeEvent(event)
+        self._apply_rounded_mask()
+    
+    def _apply_rounded_mask(self):
+        """Apply a rounded rectangle mask to create rounded corners."""
+        from PySide6.QtGui import QRegion, QPainterPath
+        from PySide6.QtCore import QRectF
+        
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), 8, 8)
+        region = QRegion(path.toFillPolygon().toPolygon())
+        self.setMask(region)
     
     def _show_context_menu(self, position):
         """Show context menu for playlist operations."""
@@ -2604,7 +2676,13 @@ class MainWindow(QMainWindow):
                     background-color: #fafafa;
                     alternate-background-color: #f0f0f0;
                     border: none;
+                    border-radius: 8px;
                     color: #000000;
+                }}
+                QTreeView::viewport {{
+                    border: none;
+                    border-radius: 8px;
+                    background: transparent;
                 }}
                 QTreeView::item {{
                     padding: 0px 4px;
@@ -2682,7 +2760,13 @@ class MainWindow(QMainWindow):
                 background-color: {base_color.name()};
                 alternate-background-color: {base_color.lighter(105).name() if not is_dark else base_color.darker(105).name()};
                 border: none;
+                border-radius: 8px;
                 color: {text_color.name()};
+            }}
+            QTreeView::viewport {{
+                border: none;
+                border-radius: 8px;
+                background: transparent;
             }}
             QTreeView::item {{
                 padding: 0px 4px;
@@ -2875,10 +2959,16 @@ class MainWindow(QMainWindow):
                     background-color: rgba(255, 255, 255, 150);
                     alternate-background-color: rgba(240, 240, 240, 150);
                     border: none;
+                    border-radius: 8px;
                     gridline-color: #ddd;
                     selection-background-color: transparent;
                     selection-color: inherit;
                     outline: none;
+                }
+                QTableView::viewport {
+                    border: none;
+                    border-radius: 8px;
+                    background: transparent;
                 }
                 QTableView::item {
                     background-color: transparent;
@@ -2909,11 +2999,17 @@ class MainWindow(QMainWindow):
                     background-color: rgba({base_color.red()}, {base_color.green()}, {base_color.blue()}, 150);
                     alternate-background-color: rgba({base_color.lighter(110).red()}, {base_color.lighter(110).green()}, {base_color.lighter(110).blue()}, 150);
                     border: none;
+                    border-radius: 8px;
                     gridline-color: palette(mid);
                     selection-background-color: transparent;
                     selection-color: inherit;
                     outline: none;
                     color: palette(text);
+                }}
+                QTableView::viewport {{
+                    border: none;
+                    border-radius: 8px;
+                    background: transparent;
                 }}
                 QTableView::item {{
                     background-color: transparent;
@@ -2940,6 +3036,7 @@ class MainWindow(QMainWindow):
                     background-color: rgba(255, 255, 255, 150);
                     alternate-background-color: rgba(240, 240, 240, 150);
                     border: none;
+                    border-radius: 8px;
                     gridline-color: #ddd;
                     selection-background-color: transparent;
                     selection-color: inherit;
@@ -3018,6 +3115,7 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central)
 
         self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setHandleWidth(5)  # 5px gap between browser/album art and playlist
         main_layout.addWidget(self.splitter)
 
         self._setup_left_panel()
@@ -3029,6 +3127,9 @@ class MainWindow(QMainWindow):
         self.fs_model.setRootPath(default_path)
         self.tree.setRootIndex(self.fs_model.index(default_path))
         self.update_reset_action_state()
+        
+        # Auto-populate playlist if default directory is a flat folder with audio files
+        self._auto_populate_playlist_on_startup(default_path)
 
     def _setup_left_panel(self):
         """Setup file browser and album art display."""
@@ -3042,6 +3143,10 @@ class MainWindow(QMainWindow):
         self.tree.sortByColumn(0, Qt.AscendingOrder)
         self.tree.header().hide()
         
+        # Enable rounded corners
+        self.tree.setAttribute(Qt.WA_StyledBackground, True)
+        self.tree.setFrameShape(QTreeView.NoFrame)
+        
         # Set indentation for subfolder hierarchy visualization
         self.tree.setIndentation(15)
         
@@ -3054,13 +3159,18 @@ class MainWindow(QMainWindow):
         self.tree_delegate = DirectoryBrowserDelegate(self.tree, self.tree)
         self.tree.setItemDelegate(self.tree_delegate)
         self.tree.setStyleSheet(self.get_tree_style("#3399ff", "white"))
+        
+        # Set viewport frame to none for rounded corners
+        self.tree.viewport().setAttribute(Qt.WA_StyledBackground, True)
+        
         self.tree.expanded.connect(self._on_tree_expanded)
 
         self.album_art = AlbumArtLabel()
         self.album_art.setStyleSheet("""
             QLabel {
                 background: palette(base);
-                border: 1px solid palette(mid);
+                border: none;
+                border-radius: 8px;
             }
         """)
 
@@ -3068,6 +3178,9 @@ class MainWindow(QMainWindow):
         self.left_splitter.addWidget(self.tree)
         self.left_splitter.addWidget(self.album_art)
         self.left_splitter.setSizes([400, 200])
+        
+        # Set margins for rounded corner visibility
+        self.left_splitter.setContentsMargins(2, 2, 2, 2)
 
         self.splitter.addWidget(self.left_splitter)
 
@@ -3081,7 +3194,7 @@ class MainWindow(QMainWindow):
         """Setup playlist table."""
         playlist_container = QWidget()
         playlist_layout = QVBoxLayout(playlist_container)
-        playlist_layout.setContentsMargins(0, 0, 0, 0)
+        playlist_layout.setContentsMargins(2, 2, 2, 2)
 
         self.playlist_model = PlaylistModel(controller=None, icons=self.icons)
         self.playlist = PlaylistView(get_asset_path("logo.png"))
@@ -3091,7 +3204,15 @@ class MainWindow(QMainWindow):
         self.playlist.setAlternatingRowColors(True)
         self.playlist.setIconSize(QSize(16, 16))
         self.playlist.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Enable rounded corners
+        self.playlist.setAttribute(Qt.WA_StyledBackground, True)
+        self.playlist.setFrameShape(QTableView.NoFrame)
+        
         self.playlist.setStyleSheet(self.get_playlist_style())
+        
+        # Set viewport frame to none for rounded corners
+        self.playlist.viewport().setAttribute(Qt.WA_StyledBackground, True)
 
         header = self.playlist.horizontalHeader()
         header.setStretchLastSection(False)
@@ -3453,9 +3574,9 @@ class MainWindow(QMainWindow):
         
         if os.path.isfile(path):
             if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
-                self.playlist_model.add_tracks([path])
-                row = self.playlist_model.rowCount() - 1
-                self.controller.play_index(row)
+                # Double-clicking a file should replace the playlist and play it
+                self.playlist_model.add_tracks([path], clear=True)
+                self.controller.play_index(0)
                 self.update_playback_ui()
         elif os.path.isdir(path):
             # Only auto-play folders if playlist is empty
@@ -3648,6 +3769,37 @@ class MainWindow(QMainWindow):
         except PermissionError:
             self.statusBar().showMessage("Permission denied for this folder", 3000)
         return files
+    
+    def _auto_populate_playlist_on_startup(self, directory):
+        """
+        Auto-populate playlist if default directory is a flat folder with audio files.
+        Only populates if: directory has audio files AND no subdirectories.
+        Does NOT auto-play.
+        """
+        if not os.path.isdir(directory):
+            return
+        
+        try:
+            has_subdirs = False
+            audio_files = []
+            
+            # Check directory contents
+            for name in sorted(os.listdir(directory)):
+                path = os.path.join(directory, name)
+                if os.path.isdir(path):
+                    has_subdirs = True
+                    break  # Found a subdirectory, stop checking
+                elif os.path.isfile(path):
+                    if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
+                        audio_files.append(path)
+            
+            # Only populate if it's a flat directory (no subdirs) with audio files
+            if not has_subdirs and audio_files:
+                self.playlist_model.add_tracks(audio_files, clear=True)
+                print(f"Auto-populated playlist with {len(audio_files)} tracks from flat directory")
+                
+        except (PermissionError, OSError) as e:
+            print(f"Could not auto-populate playlist: {e}")
 
     # SETTINGS PERSISTENCE
     
