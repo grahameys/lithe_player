@@ -2910,9 +2910,10 @@ class MainWindow(QMainWindow):
                 QSlider::handle:horizontal {
                     background: #ffffff;
                     border: 1px solid #777;
-                    width: 16px;
-                    margin: -5px 0;
-                    border-radius: 8px;
+                    width: 14px;
+                    height: 14px;
+                    margin: -4px 0;
+                    border-radius: 7px;
                 }
                 QSlider::handle:horizontal:pressed { background: #cccccc; }
             """
@@ -2944,9 +2945,10 @@ class MainWindow(QMainWindow):
             QSlider::handle:horizontal {{
                 background: {button_color.name()};
                 border: 1px solid palette(dark);
-                width: 16px;
-                margin: -5px 0;
-                border-radius: 8px;
+                width: 14px;
+                height: 14px;
+                margin: -4px 0;
+                border-radius: 7px;
             }}
             QSlider::handle:horizontal:pressed {{ background: {button_color.darker(110).name()}; }}
         """
@@ -3487,14 +3489,15 @@ class MainWindow(QMainWindow):
                 border: 1px solid #999;
                 height: 6px;
                 background: {color_name};
-                border-radius: 4px;
+                border-radius: 3px;
             }}
             QSlider::handle:horizontal {{
                 background: {color_name};
                 border: 1px solid #666;
-                width: 18px;
+                width: 14px;
+                height: 14px;
                 margin: -5px 0;
-                border-radius: 9px;
+                border-radius: 7px;
             }}
         """
         self.progress_slider.setStyleSheet(slider_style)
