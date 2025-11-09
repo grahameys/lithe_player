@@ -2508,6 +2508,14 @@ class MainWindow(QMainWindow):
         self.reset_default_act.setStatusTip("Clear the default folder setting")
         self.reset_default_act.triggered.connect(self.on_reset_default_folder)
         file_menu.addAction(self.reset_default_act)
+        
+        file_menu.addSeparator()
+        
+        act_exit = QAction("E&xit", self)
+        act_exit.setShortcut("Ctrl+Q")
+        act_exit.setStatusTip("Exit the application")
+        act_exit.triggered.connect(self.close)
+        file_menu.addAction(act_exit)
 
         # Appearance menu
         appearance_menu = self.menuBar().addMenu("&Appearance")
