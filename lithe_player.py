@@ -1238,12 +1238,19 @@ class PlayingRowDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self.model = model
         self.hover_row = -1
+        self.custom_hover_color = None  # Custom hover color
 
     def set_hover_row(self, row):
         if self.hover_row != row:
             self.hover_row = row
             if self.parent():
                 self.parent().viewport().update()
+    
+    def set_hover_color(self, color):
+        """Set custom hover color."""
+        self.custom_hover_color = color
+        if self.parent():
+            self.parent().viewport().update()
 
     def paint(self, painter, option, index):
         opt = QStyleOptionViewItem(option)
@@ -1266,17 +1273,21 @@ class PlayingRowDelegate(QStyledItemDelegate):
 
         if index.row() == self.hover_row:
             painter.save()
-            app = QApplication.instance()
-            if app:
-                app_palette = app.palette()
-                base_color = app_palette.color(QPalette.Base)
-                if is_dark_color(base_color):
-                    hover_color = QColor(base_color.lighter(130))
-                    hover_color.setAlpha(100)
+            if self.custom_hover_color:
+                hover_color = QColor(self.custom_hover_color)
+                hover_color.setAlpha(100)
+            else:
+                app = QApplication.instance()
+                if app:
+                    app_palette = app.palette()
+                    base_color = app_palette.color(QPalette.Base)
+                    if is_dark_color(base_color):
+                        hover_color = QColor(base_color.lighter(130))
+                        hover_color.setAlpha(100)
+                    else:
+                        hover_color = QColor(220, 238, 255, 100)
                 else:
                     hover_color = QColor(220, 238, 255, 100)
-            else:
-                hover_color = QColor(220, 238, 255, 100)
             painter.fillRect(opt.rect, hover_color)
             painter.restore()
 
@@ -1296,6 +1307,21 @@ class DirectoryBrowserDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self.tree_view = tree_view
         self.highlight_color = None
+        self.custom_hover_color = None
+        self.hover_index = None
+    
+    def set_hover_color(self, color):
+        """Set custom hover color."""
+        self.custom_hover_color = color
+        if self.tree_view:
+            self.tree_view.viewport().update()
+    
+    def set_hover_index(self, index):
+        """Set the currently hovered index."""
+        if self.hover_index != index:
+            self.hover_index = index
+            if self.tree_view:
+                self.tree_view.viewport().update()
     
     def paint(self, painter, option, index):
         opt = QStyleOptionViewItem(option)
@@ -1306,6 +1332,27 @@ class DirectoryBrowserDelegate(QStyledItemDelegate):
         if not is_directory and self.tree_view:
             indentation = self.tree_view.indentation()
             opt.rect.adjust(-indentation, 0, 0, 0)
+
+        # Paint hover state
+        if (option.state & QStyle.State_MouseOver) and self.hover_index == index:
+            painter.save()
+            if self.custom_hover_color:
+                hover_color = QColor(self.custom_hover_color)
+                hover_color.setAlpha(100)
+            else:
+                app = QApplication.instance()
+                if app:
+                    app_palette = app.palette()
+                    base_color = app_palette.color(QPalette.Base)
+                    if is_dark_color(base_color):
+                        hover_color = QColor(base_color.lighter(120))
+                        hover_color.setAlpha(100)
+                    else:
+                        hover_color = QColor(220, 238, 255, 100)
+                else:
+                    hover_color = QColor(220, 238, 255, 100)
+            painter.fillRect(opt.rect, hover_color)
+            painter.restore()
 
         if (option.state & QStyle.State_Selected) and self.highlight_color:
             painter.save()
@@ -1395,6 +1442,7 @@ class DirectoryTreeView(QTreeView):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
         self.playlist_model = None
+        self.setMouseTracking(True)
     
     def showEvent(self, event):
         super().showEvent(event)
@@ -1541,6 +1589,12 @@ class DirectoryTreeView(QTreeView):
         super().mousePressEvent(event)
     
     def mouseMoveEvent(self, event):
+        # Update hover state
+        index = self.indexAt(event.position().toPoint())
+        delegate = self.itemDelegate()
+        if hasattr(delegate, "set_hover_index"):
+            delegate.set_hover_index(index if index.isValid() else None)
+        
         if not (event.buttons() & Qt.LeftButton):
             super().mouseMoveEvent(event)
             return
@@ -1575,6 +1629,13 @@ class DirectoryTreeView(QTreeView):
         mime_data.setUrls(urls)
         drag.setMimeData(mime_data)
         drag.exec(Qt.CopyAction)
+    
+    def leaveEvent(self, event):
+        """Clear hover state when mouse leaves the tree view."""
+        delegate = self.itemDelegate()
+        if hasattr(delegate, "set_hover_index"):
+            delegate.set_hover_index(None)
+        super().leaveEvent(event)
 
 class PlaylistView(QTableView):
     """QTableView with watermark, hover support, and drag-and-drop."""
@@ -2059,7 +2120,7 @@ class MainWindow(QMainWindow):
     """Main application window."""
 
     @staticmethod
-    def get_tree_style(highlight_color, highlight_text_color):
+    def get_tree_style(highlight_color, highlight_text_color, hover_color=None):
         """Generate theme-aware tree view stylesheet."""
         app = QApplication.instance()
         if not app:
@@ -2073,7 +2134,6 @@ class MainWindow(QMainWindow):
                 }}
                 QTreeView::viewport {{ border: none; border-radius: 8px; background: transparent; }}
                 QTreeView::item {{ padding: 0px 4px; min-height: 12px; border: none; outline: none; }}
-                QTreeView::item:hover {{ background: #dceeff; color: black; }}
                 QTreeView::item:selected {{ background: {highlight_color}; color: {highlight_text_color}; }}
                 QTreeView::branch {{ background: transparent; width: 0px; border: none; }}
             """
@@ -2084,11 +2144,9 @@ class MainWindow(QMainWindow):
         is_dark = is_dark_color(base_color)
         
         if is_dark:
-            hover_bg = base_color.lighter(120).name()
             alternate_bg = f"rgba({base_color.lighter(110).red()}, {base_color.lighter(110).green()}, {base_color.lighter(110).blue()}, 150)"
             bg = f"rgba({base_color.red()}, {base_color.green()}, {base_color.blue()}, 150)"
         else:
-            hover_bg = "#dceeff"
             alternate_bg = "rgba(240, 240, 240, 150)"
             bg = "rgba(255, 255, 255, 150)"
         
@@ -2102,7 +2160,6 @@ class MainWindow(QMainWindow):
             }}
             QTreeView::viewport {{ border: none; border-radius: 8px; background: transparent; }}
             QTreeView::item {{ padding: 0px 4px; min-height: 12px; border: none; outline: none; }}
-            QTreeView::item:hover {{ background: {hover_bg}; }}
             QTreeView::item:selected {{ background: {highlight_color}; color: {highlight_text_color}; }}
             QTreeView::branch {{ background: transparent; width: 0px; border: none; }}
         """
@@ -2282,6 +2339,7 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(get_asset_path("icon.ico")))
 
         self.settings = JsonSettings("lithe_player_config.json")
+        self.hover_color = None  # Will be set from settings or default
 
         self.icons = {
             "row_play": QIcon(get_asset_path("plplay.svg")),
@@ -2528,6 +2586,11 @@ class MainWindow(QMainWindow):
         act_color.triggered.connect(self.on_choose_highlight_color)
         theme_submenu.addAction(act_color)
         
+        act_hover_color = QAction("&Hover Color...", self)
+        act_hover_color.setStatusTip("Customize the hover highlight color")
+        act_hover_color.triggered.connect(self.on_choose_hover_color)
+        theme_submenu.addAction(act_hover_color)
+        
         # Equalizer submenu
         equalizer_submenu = appearance_menu.addMenu("&Equalizer")
         
@@ -2668,7 +2731,7 @@ class MainWindow(QMainWindow):
 
     def update_tree_stylesheet(self, color):
         text_color = "white" if is_dark_color(color) else "black"
-        self.tree.setStyleSheet(self.get_tree_style(color.name(), text_color))
+        self.tree.setStyleSheet(self.get_tree_style(color.name(), text_color, self.hover_color))
 
     def update_reset_action_state(self):
         self.reset_default_act.setEnabled(self.settings.contains("default_dir"))
@@ -2885,6 +2948,28 @@ class MainWindow(QMainWindow):
             self.update_playback_ui()
             self.update_slider_colors()
             self.equalizer.update_color(color)
+    
+    def on_choose_hover_color(self):
+        """Choose custom hover color for both playlist and file browser."""
+        current_color = self.hover_color if self.hover_color else QColor(220, 238, 255)
+        color = QColorDialog.getColor(current_color, self, "Choose Hover Color")
+        if color.isValid():
+            self.hover_color = color
+            self.settings.setValue("hoverColor", color.name())
+            # Update playlist delegate
+            self.delegate.set_hover_color(color)
+            # Update tree delegate
+            self.tree_delegate.set_hover_color(color)
+            # Update tree stylesheet
+            if self.playlist_model.highlight_color:
+                text_color = "white" if is_dark_color(self.playlist_model.highlight_color) else "black"
+                self.tree.setStyleSheet(self.get_tree_style(
+                    self.playlist_model.highlight_color.name(), 
+                    text_color,
+                    color
+                ))
+            self.playlist.viewport().update()
+            self.tree.viewport().update()
 
     # Helper methods
     def _get_audio_files_from_directory(self, directory):
@@ -2926,6 +3011,15 @@ class MainWindow(QMainWindow):
     # Settings persistence
     def restore_settings(self):
         """Restore saved settings from previous session."""
+        # Restore hover color first
+        hover_color_name = self.settings.value("hoverColor")
+        if hover_color_name:
+            hover_color = QColor(hover_color_name)
+            if hover_color.isValid():
+                self.hover_color = hover_color
+                self.delegate.set_hover_color(hover_color)
+                self.tree_delegate.set_hover_color(hover_color)
+        
         color_name = self.settings.value("highlightColor")
         if color_name:
             color = QColor(color_name)
