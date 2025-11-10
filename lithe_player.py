@@ -2161,7 +2161,7 @@ class FontSelectionDialog(QWidget):
 class SearchWorker(QThread):
     """Background worker thread for searching library."""
     
-    finished = Signal(list)
+    finished = Signal(list, str)  # results, base_directory
     
     def __init__(self, directory, query, parent=None):
         super().__init__(parent)
@@ -2176,29 +2176,38 @@ class SearchWorker(QThread):
             
             # Search for matching files and folders
             for root, dirs, files in os.walk(self.directory):
-                # Check if any folder name matches
+                # Check if any part of the path matches (any parent or current folder)
+                path_parts = root.split(os.sep)
+                current_folder_matched = any(self.query in part.lower() for part in path_parts)
+                
+                if current_folder_matched:
+                    matched_folders.add(root)
+                
+                # Check if any child folder name matches
                 for dirname in dirs:
                     if self.query in dirname.lower():
                         folder_path = os.path.join(root, dirname)
                         matched_folders.add(folder_path)
                 
-                # Check if current folder was matched (to include all its files)
-                current_folder_matched = root in matched_folders
-                
                 # Search files
                 for filename in files:
                     ext = os.path.splitext(filename)[1].lower()
                     if ext in SUPPORTED_EXTENSIONS:
-                        # Include file if its name matches OR if it's in a matched folder
-                        if self.query in filename.lower() or current_folder_matched:
-                            filepath = os.path.join(root, filename)
+                        # Include file if:
+                        # 1. Its name matches the query
+                        # 2. OR any part of its path matches the query
+                        filepath = os.path.join(root, filename)
+                        
+                        if (self.query in filename.lower() or 
+                            current_folder_matched or
+                            root in matched_folders):
                             metadata = extract_metadata(filepath, 0)
                             self.results.append(metadata)
                         
         except Exception as e:
             print(f"Search error: {e}")
         
-        self.finished.emit(self.results)
+        self.finished.emit(self.results, self.directory)
 
 class SearchResultsModel(QAbstractItemModel):
     """Model for search results with folder grouping."""
@@ -2209,10 +2218,12 @@ class SearchResultsModel(QAbstractItemModel):
         super().__init__(parent)
         self.folders = []  # List of (folder_name, [tracks])
         self.flat_results = []  # Flat list for easy access
+        self.base_directory = None  # Store base directory for relative paths
     
-    def set_results(self, results):
+    def set_results(self, results, base_directory=None):
         """Group results by folder/album."""
         self.beginResetModel()
+        self.base_directory = base_directory
         
         # Group by folder path
         from collections import defaultdict
@@ -2293,7 +2304,12 @@ class SearchResultsModel(QAbstractItemModel):
             
             if role == Qt.DisplayRole:
                 if col == 0:
-                    return f"{folder_name} ({len(tracks)} tracks)"
+                    # Show relative path from base directory
+                    if self.base_directory and folder_path.startswith(self.base_directory):
+                        rel_path = os.path.relpath(folder_path, self.base_directory)
+                        return f"{rel_path} ({len(tracks)} tracks)"
+                    else:
+                        return f"{folder_name} ({len(tracks)} tracks)"
                 return ""
             elif role == Qt.DecorationRole:
                 if col == 0:
@@ -2329,6 +2345,18 @@ class SearchResultsModel(QAbstractItemModel):
                     return track.get("artist", "")
                 elif col == 2:
                     return track.get("album", "")
+            elif role == Qt.DecorationRole:
+                if col == 0:
+                    # Return file icon based on theme
+                    app = QApplication.instance()
+                    if app:
+                        palette = app.palette()
+                        base_color = palette.color(QPalette.Base)
+                        if is_dark_color(base_color):
+                            return QIcon(get_asset_path("filewhite.svg"))
+                        else:
+                            return QIcon(get_asset_path("file.svg"))
+                return None
         
         return None
     
@@ -2421,29 +2449,61 @@ class SearchResultsDelegate(QStyledItemDelegate):
                 painter.fillRect(indent_rect, base_color)
             painter.restore()
         
-        # Paint folder rows with accent color background
+        # Paint folder rows with accent color background spanning all columns
         if is_folder and self.highlight_color:
+            # Paint accent background in ALL columns
             painter.save()
             painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
             painter.fillRect(opt.rect, self.highlight_color)
             painter.restore()
             
-            # Set text color for folders
-            opt.state &= ~(QStyle.State_Selected | QStyle.State_HasFocus | 
-                          QStyle.State_MouseOver | QStyle.State_Active)
-            palette = opt.palette
-            text_color = Qt.white if is_dark_color(self.highlight_color) else Qt.black
-            palette.setColor(QPalette.Text, text_color)
-            palette.setColor(QPalette.HighlightedText, text_color)
-            opt.palette = palette
+            # Only paint text in column 0, spanning across all columns
+            if index.column() == 0:
+                # Calculate full row width
+                model = index.model()
+                col_count = model.columnCount(index.parent()) if model else 1
+                
+                if self.tree_view:
+                    header = self.tree_view.header()
+                    full_width = sum(header.sectionSize(col) for col in range(col_count))
+                    text_rect = QRect(opt.rect.left(), opt.rect.top(), full_width, opt.rect.height())
+                else:
+                    text_rect = opt.rect
+                
+                # Get the text to display
+                display_text = index.data(Qt.DisplayRole)
+                if display_text:
+                    # Get icon
+                    icon = index.data(Qt.DecorationRole)
+                    
+                    # Set text color
+                    text_color = Qt.white if is_dark_color(self.highlight_color) else Qt.black
+                    
+                    painter.save()
+                    painter.setPen(text_color)
+                    
+                    # Paint icon if present
+                    icon_width = 0
+                    if icon and not icon.isNull():
+                        icon_size = opt.decorationSize
+                        icon_rect = QRect(text_rect.left() + 4, text_rect.top() + (text_rect.height() - icon_size.height()) // 2,
+                                         icon_size.width(), icon_size.height())
+                        icon.paint(painter, icon_rect)
+                        icon_width = icon_size.width() + 8
+                    
+                    # Paint text
+                    text_rect.setLeft(text_rect.left() + icon_width)
+                    painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, display_text)
+                    painter.restore()
+                
+                return  # Don't call super().paint() for folder column 0
+            else:
+                return  # Don't paint any content in columns > 0 for folders
+            
         else:
-            # For track items, clear to base color to remove alternating row colors
-            painter.save()
-            app = QApplication.instance()
-            if app:
-                base_color = app.palette().color(QPalette.Base)
-                painter.fillRect(opt.rect, base_color)
-            painter.restore()
+            # For track items, don't manually paint background - let Qt handle alternating rows
+            # Just clear the indentation area (already done above)
+            pass
 
         # Paint hover state BEFORE super().paint() so text renders on top
         if self.hover_index and self.hover_index.row() == index.row() and self.hover_index.parent() == index.parent():
@@ -2555,9 +2615,9 @@ class SearchResultsDialog(QWidget):
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
     
-    def set_results(self, results):
+    def set_results(self, results, base_directory=None):
         """Update the search results."""
-        self.model.set_results(results)
+        self.model.set_results(results, base_directory)
         
         # Expand all folders by default
         self.results_tree.expandAll()
@@ -3784,14 +3844,14 @@ class MainWindow(QMainWindow):
         self.search_worker.finished.connect(self._on_search_finished)
         self.search_worker.start()
     
-    def _on_search_finished(self, results):
+    def _on_search_finished(self, results, base_directory):
         """Handle search completion."""
         # Restore search box
         self.search_box.setEnabled(True)
         self.search_box.setPlaceholderText("Search library...")
         
         # Show results and apply colors
-        self.search_results_dialog.set_results(results)
+        self.search_results_dialog.set_results(results, base_directory)
         self.search_results_dialog.set_colors(
             self.playlist_model.highlight_color, 
             self.hover_color

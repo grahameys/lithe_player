@@ -6,14 +6,14 @@
   "playlistHeader": "base64:AAAA/wAAAAAAAAABAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA6oAAAAFAAABAAAAAAAAAAAAAAAAAGT/////AAAAhAAAAAAAAAAFAAAAIAAAAAEAAAAAAAABEgAAAAEAAAAAAAABHAAAAAEAAAAAAAABMQAAAAEAAAAAAAAAKwAAAAEAAAAAAAAD6AAAAAAAAAAAAAAAAAAAAAAAAAAAAQ==",
   "volume": 100,
   "default_dir": "F:/Music",
-  "highlightColor": "#8b8b8b",
+  "highlightColor": "#ffff00",
   "playlistFontFamily": "Aptos",
   "playlistFontSize": 9,
   "peakColor": "#f2bd26",
   "peakAlpha": 79,
   "browserFontFamily": "Aptos",
   "browserFontSize": 9,
-  "playlistTracks": "[\"F:/Music\\\\Queen\\\\2015 - A Night At The Odeon\\\\07. Bohemian Rhapsody (Reprise).mp3\"]",
+  "playlistTracks": "[\"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\01. Front Row.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\02. Baba.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\03. Thank U.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\04. Are You Still Mad.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\05. Sympathetic Character.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\06. That I Would Be Good.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\07. The Couch.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\08. Can't Not.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\09. UR.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\10. I Was Hoping.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\11. One.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\12. Would Not Come.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\13. Unsent.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\14. So Pure.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\15. Joining You.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\16. Heart of the House.mp3\", \"F:/Music\\\\Alanis Morissette\\\\1998 - Supposed Former Infatuation Junkie\\\\17. Your Congratulations.mp3\"]",
   "currentTrackIndex": 0,
   "hoverColor": "#dceeff"
 }
