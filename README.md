@@ -42,6 +42,7 @@
 - **Context Menus** - Right-click for quick actions (Play Next, Add to Playlist, Remove, etc.)
 - **Smart Folder Loading** - Context-aware playlist behavior (add vs. overwrite)
 - **File Browser** - Intuitive directory navigation with album art preview
+- **Search Bar** - Instantly filter tracks and folders by file/folder name using the integrated search bar (no inbuilt library; works best with well-organized collections)
 - **Global Media Keys** - Windows media key support (Play/Pause, Stop, Next, Previous)
 - **Keyboard Shortcuts** - Spacebar, arrow keys, and standard media controls
 - **Seek & Volume Controls** - Precise playback positioning and volume adjustment
@@ -413,19 +414,6 @@ Seamless integration with your operating system:
 - **Open folder** - Load a directory of music files
 - **Choose default folder** - Set startup location for file browser
 - **Reset default folder** - Return to system root view
-
-### Search Feature
-
-Lithe Player includes a fast, integrated search bar for quickly finding tracks and folders in your music library:
-
-- **Location**: The search bar is positioned to the right of the playback controls for easy access.
-- **Instant Filtering**: Type in the search box to instantly filter results in the file browser and playlist.
-- **Folder & Track Results**: Search results display both folders and tracks, with theme-aware folder icons for light/dark mode.
-- **Consistent UI**: Search results use a flat, non-expandable layout with clear hover highlighting, matching the rest of the interface.
-- **Keyboard Support**: Press `Enter` to trigger a search, and use arrow keys to navigate results.
-- **File/Folder Name Search Only**: The search matches file and folder names only; it does not search within track metadata or provide a full music library database.
-
-This feature helps you quickly locate and play music, even in large libraries, provided your collection is well organized by folder and file names.
 
 ---
 
