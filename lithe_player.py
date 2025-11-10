@@ -1499,6 +1499,7 @@ class DirectoryTreeView(QTreeView):
         self.customContextMenuRequested.connect(self._show_context_menu)
         self.playlist_model = None
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.NoFocus)  # Disable focus rectangle
     
     def showEvent(self, event):
         super().showEvent(event)
