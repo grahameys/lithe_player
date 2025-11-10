@@ -1456,13 +1456,8 @@ class DirectoryBrowserDelegate(QStyledItemDelegate):
                 indent_rect = QRect(0, original_rect.y(), total_indent, original_rect.height())
                 painter.fillRect(indent_rect, base_color)
             painter.restore()
-        
-        # For files, adjust the text rect
-        if not is_directory and self.tree_view:
-            indentation_width = self.tree_view.indentation()
-            opt.rect.adjust(-indentation_width, 0, 0, 0)
 
-        # Paint hover state - use original_rect (not adjusted)
+        # Paint hover state - use original_rect
         if (option.state & QStyle.State_MouseOver) and self.hover_index == index:
             painter.save()
             # Paint semi-transparent hover color directly (will blend with whatever is underneath)
@@ -2409,6 +2404,46 @@ class SearchResultsDelegate(QStyledItemDelegate):
     
     def paint(self, painter, option, index):
         opt = QStyleOptionViewItem(option)
+        
+        # Check if this is a folder or track item
+        is_folder = index.internalId() == 0xFFFFFFFF  # FOLDER_ID
+        
+        # For track items (child items), clear the indentation area
+        if not is_folder and self.tree_view:
+            indentation_width = self.tree_view.indentation()
+            
+            # Clear the indentation area to base color
+            painter.save()
+            app = QApplication.instance()
+            if app:
+                base_color = app.palette().color(QPalette.Base)
+                indent_rect = QRect(0, opt.rect.y(), indentation_width, opt.rect.height())
+                painter.fillRect(indent_rect, base_color)
+            painter.restore()
+        
+        # Paint folder rows with accent color background
+        if is_folder and self.highlight_color:
+            painter.save()
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            painter.fillRect(opt.rect, self.highlight_color)
+            painter.restore()
+            
+            # Set text color for folders
+            opt.state &= ~(QStyle.State_Selected | QStyle.State_HasFocus | 
+                          QStyle.State_MouseOver | QStyle.State_Active)
+            palette = opt.palette
+            text_color = Qt.white if is_dark_color(self.highlight_color) else Qt.black
+            palette.setColor(QPalette.Text, text_color)
+            palette.setColor(QPalette.HighlightedText, text_color)
+            opt.palette = palette
+        else:
+            # For track items, clear to base color to remove alternating row colors
+            painter.save()
+            app = QApplication.instance()
+            if app:
+                base_color = app.palette().color(QPalette.Base)
+                painter.fillRect(opt.rect, base_color)
+            painter.restore()
 
         # Paint hover state BEFORE super().paint() so text renders on top
         if self.hover_index and self.hover_index.row() == index.row() and self.hover_index.parent() == index.parent():
@@ -2436,7 +2471,7 @@ class SearchResultsDelegate(QStyledItemDelegate):
 
 
         # Paint selection state - always paint the full row
-        if (option.state & QStyle.State_Selected) and self.highlight_color:
+        if (option.state & QStyle.State_Selected) and self.highlight_color and not is_folder:
             painter.save()
             # Paint semi-transparent highlight color directly (will blend with whatever is underneath)
             painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
@@ -2486,7 +2521,7 @@ class SearchResultsDialog(QWidget):
         self.results_tree.setMouseTracking(True)
         self.results_tree.setItemsExpandable(False)  # Disable expand/collapse
         self.results_tree.setRootIsDecorated(False)  # Hide expand indicators
-        self.results_tree.setIndentation(0)  # Remove indentation for child items
+        self.results_tree.setIndentation(20)  # Set indentation for child items
         
         # Create model and delegate
         self.model = SearchResultsModel(self)
@@ -3106,6 +3141,7 @@ class MainWindow(QMainWindow):
         self.tree.setStyleSheet(self.get_tree_style("#3399ff", "white"))
         self.tree.viewport().setAttribute(Qt.WA_StyledBackground, True)
         self.tree.expanded.connect(self._on_tree_expanded)
+        self.tree.doubleClicked.connect(self._on_tree_double_clicked)
 
         self.album_art = AlbumArtLabel()
         self.album_art.setStyleSheet("QLabel { background: palette(base); border: none; border-radius: 8px; }")
@@ -3122,6 +3158,39 @@ class MainWindow(QMainWindow):
 
     def _on_tree_expanded(self, index):
         QTimer.singleShot(0, lambda: self.tree.scrollTo(index, QAbstractItemView.PositionAtCenter))
+    
+    def _on_tree_double_clicked(self, index):
+        """Handle double-click on tree items. If folder is expanded, load it to playlist."""
+        if not index.isValid():
+            return
+        
+        # Check if it's a directory
+        if self.fs_model.isDir(index):
+            # If already expanded, load the folder to playlist
+            if self.tree.isExpanded(index):
+                folder_path = self.fs_model.filePath(index)
+                self._load_folder_to_playlist(folder_path)
+            # If not expanded, it will expand automatically (default behavior)
+    
+    def _load_folder_to_playlist(self, folder_path):
+        """Load all audio files from a folder into the playlist and start playback."""
+        import os
+        
+        # Collect all audio files recursively
+        audio_files = []
+        audio_extensions = ('.mp3', '.flac', '.wav', '.ogg', '.m4a', '.aac', '.wma', '.opus')
+        
+        for root, dirs, files in os.walk(folder_path):
+            for file in sorted(files):
+                if file.lower().endswith(audio_extensions):
+                    audio_files.append(os.path.join(root, file))
+        
+        # Add files to playlist (clear=True will clear existing playlist)
+        if audio_files:
+            self.playlist_model.add_tracks(audio_files, clear=True)
+            
+            # Start playback from the first track
+            self.controller.play_index(0)
 
     def _setup_right_panel(self):
         """Setup playlist table."""
