@@ -325,6 +325,8 @@ class GaplessSignals(QObject):
     track_changed = Signal(str)
     start_equalizer = Signal(str)
     stop_equalizer = Signal()
+    pause_equalizer = Signal()
+    resume_equalizer = Signal(str)
 
 class GaplessPlaybackManager:
     """Manages dual VLC players for true gapless multiformat playback."""
@@ -566,14 +568,14 @@ class GaplessPlaybackManager:
     def pause(self):
         if self.active_player and self.active_player.is_playing():
             self.active_player.pause()
-            self.signals.stop_equalizer.emit()
+            self.signals.pause_equalizer.emit()
     
     def resume(self):
         if self.active_player and self.current_track_path:
             if not self.active_player.is_playing():
                 self.active_player.play()
                 self._start_monitoring()
-                self.signals.start_equalizer.emit(self.current_track_path)
+                self.signals.resume_equalizer.emit(self.current_track_path)
     
     def stop(self):
         self.monitoring = False
@@ -643,6 +645,8 @@ class EqualizerWidget(QWidget):
         self._decoder_running = False
         self._stop_decoder = threading.Event()
         self._decoder_generation = 0  # Track which decoder instance is current
+        self._pending_filepath = None
+        self._pending_generation = 0
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_from_fft)
@@ -661,8 +665,20 @@ class EqualizerWidget(QWidget):
         self.update()
 
     def start(self, filepath):
+        # Store filepath for deferred start
+        self._pending_filepath = filepath
+        self._pending_generation = self._decoder_generation + 1
+        
+        # Use QTimer to defer the actual decoder creation
+        # This ensures the Qt event loop has processed everything before we start the new decoder
+        QTimer.singleShot(50, self._deferred_start)
+    
+    def _deferred_start(self):
+        """Actually start the decoder after a short delay to avoid Qt event loop issues."""
+        filepath = self._pending_filepath
+        
         # Increment generation to invalidate old decoder thread
-        self._decoder_generation += 1
+        self._decoder_generation = self._pending_generation
         current_generation = self._decoder_generation
         
         # Signal old decoder to stop (it will exit on its own when it sees generation changed)
@@ -679,7 +695,21 @@ class EqualizerWidget(QWidget):
         )
         self._decoder_thread.start()
         
-        # Make sure timer is running (don't stop/start if already running)
+        # Always restart the timer to ensure it continues working
+        if self.timer.isActive():
+            self.timer.stop()
+        self.timer.start(EQUALIZER_UPDATE_INTERVAL_MS)
+    
+    def _restart_timer(self):
+        """Restart the timer (not used anymore, kept for compatibility)."""
+        pass
+
+    def pause(self):
+        """Pause equalizer - freeze display without clearing."""
+        self.timer.stop()
+    
+    def resume(self, filepath):
+        """Resume equalizer - restart timer without changing decoder."""
         if not self.timer.isActive():
             self.timer.start(EQUALIZER_UPDATE_INTERVAL_MS)
 
@@ -739,12 +769,19 @@ class EqualizerWidget(QWidget):
 
     def update_from_fft(self):
         try:
-            # Check if there's an active decoder (generation > 0 and decoder thread exists)
-            if self._decoder_generation == 0:
+            # Use generation number to validate decoder, not thread object
+            # This avoids race conditions during thread transitions
+            current_gen = self._decoder_generation
+            if current_gen == 0:
                 return
-            if not self._decoder_thread:
+            
+            # Check if decoder is running by verifying the thread exists and matches generation
+            thread_obj = self._decoder_thread
+            if not thread_obj:
                 return
-            if not self._decoder_thread.is_alive():
+            
+            # The thread must be alive
+            if not thread_obj.is_alive():
                 return
             
             fft = np.fft.rfft(self.sample_buffer * np.hanning(len(self.sample_buffer)))
@@ -762,8 +799,6 @@ class EqualizerWidget(QWidget):
             self.update()
         except Exception as e:
             print(f"Error in update_from_fft: {e}")
-            import traceback
-            traceback.print_exc()
 
     def _smooth_levels_with_gravity(self):
         gravity = 0.4
@@ -1105,9 +1140,11 @@ class AudioPlayerController:
         
         self.gapless_manager = GaplessPlaybackManager(self.instance, eq_widget)
         self.gapless_manager.setup_events()
-        self.gapless_manager.signals.track_changed.connect(self._on_gapless_track_change)
-        self.gapless_manager.signals.start_equalizer.connect(self._start_equalizer)
-        self.gapless_manager.signals.stop_equalizer.connect(self._stop_equalizer)
+        self.gapless_manager.signals.track_changed.connect(self._on_gapless_track_change, Qt.QueuedConnection)
+        self.gapless_manager.signals.start_equalizer.connect(self._start_equalizer, Qt.QueuedConnection)
+        self.gapless_manager.signals.stop_equalizer.connect(self._stop_equalizer, Qt.QueuedConnection)
+        self.gapless_manager.signals.pause_equalizer.connect(self._pause_equalizer, Qt.QueuedConnection)
+        self.gapless_manager.signals.resume_equalizer.connect(self._resume_equalizer, Qt.QueuedConnection)
         
         self.player = self.gapless_manager.player_a
         self.current_index = -1
@@ -1122,6 +1159,14 @@ class AudioPlayerController:
     def _stop_equalizer(self):
         if self.eq_widget:
             self.eq_widget.stop()
+    
+    def _pause_equalizer(self):
+        if self.eq_widget:
+            self.eq_widget.pause()
+    
+    def _resume_equalizer(self, filepath):
+        if self.eq_widget:
+            self.eq_widget.resume(filepath)
 
     def _on_gapless_track_change(self, filepath):
         self.gapless_manager._transition_triggered = False
