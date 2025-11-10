@@ -368,6 +368,14 @@ class GaplessPlaybackManager:
         """Play a track with optional preloading of next track."""
         self._transition_triggered = False
         
+        # Stop the monitoring thread to prevent stale signals if a track is playing
+        if self.active_player and self.active_player.is_playing():
+            # Don't stop equalizer here - let start() handle the transition
+            # Stopping and immediately starting causes timer race conditions
+            # Stop the monitoring thread to prevent stale signals
+            self.monitoring = False
+            self._stop_monitoring.set()
+        
         if self.active_player is None:
             self.active_player = self.player_a
             self.standby_player = self.player_b
@@ -634,6 +642,7 @@ class EqualizerWidget(QWidget):
         self._decoder_thread = None
         self._decoder_running = False
         self._stop_decoder = threading.Event()
+        self._decoder_generation = 0  # Track which decoder instance is current
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_from_fft)
@@ -652,22 +661,31 @@ class EqualizerWidget(QWidget):
         self.update()
 
     def start(self, filepath):
+        # Increment generation to invalidate old decoder thread
+        self._decoder_generation += 1
+        current_generation = self._decoder_generation
+        
+        # Signal old decoder to stop (it will exit on its own when it sees generation changed)
         if self._decoder_running:
             self._decoder_running = False
             self._stop_decoder.set()
-            self._decoder_thread = None
         
+        # Create and start new decoder thread immediately
+        # Don't wait for old thread - it will exit on its own (daemon thread)
         self._stop_decoder.clear()
         self._decoder_running = True
         self._decoder_thread = threading.Thread(
-            target=self._decode_loop, args=(filepath,), daemon=True
+            target=self._decode_loop, args=(filepath, current_generation), daemon=True
         )
         self._decoder_thread.start()
         
+        # Make sure timer is running (don't stop/start if already running)
         if not self.timer.isActive():
             self.timer.start(EQUALIZER_UPDATE_INTERVAL_MS)
 
     def stop(self, clear_display=True):
+        # Don't increment generation - let start() handle that
+        # Just set flags for cleanup
         self._decoder_running = False
         self._stop_decoder.set()
         self._decoder_thread = None
@@ -692,10 +710,11 @@ class EqualizerWidget(QWidget):
         self.velocity = [0] * self.bar_count
         self.update()
 
-    def _decode_loop(self, filepath):
+    def _decode_loop(self, filepath, generation):
         try:
             with sf.SoundFile(filepath) as f:
-                while self._decoder_running and not self._stop_decoder.is_set():
+                # Only check generation - don't check _stop_decoder to avoid race conditions
+                while self._decoder_generation == generation:
                     frames = f.read(ANALYSIS_CHUNK_SAMPLES, dtype="float32", always_2d=True)
                     if len(frames) == 0:
                         f.seek(0)
@@ -711,7 +730,7 @@ class EqualizerWidget(QWidget):
                     
                     sleep_time = len(samples) / DEFAULT_ANALYSIS_RATE
                     elapsed = 0
-                    while elapsed < sleep_time and not self._stop_decoder.is_set():
+                    while elapsed < sleep_time and self._decoder_generation == generation:
                         time.sleep(0.01)
                         elapsed += 0.01
                         
@@ -719,20 +738,32 @@ class EqualizerWidget(QWidget):
             print(f"Decoder thread error: {e}")
 
     def update_from_fft(self):
-        if not self._decoder_running:
-            return
+        try:
+            # Check if there's an active decoder (generation > 0 and decoder thread exists)
+            if self._decoder_generation == 0:
+                return
+            if not self._decoder_thread:
+                return
+            if not self._decoder_thread.is_alive():
+                return
             
-        fft = np.fft.rfft(self.sample_buffer * np.hanning(len(self.sample_buffer)))
-        magnitude = np.abs(fft)
-        freqs_hz = np.fft.rfftfreq(len(self.sample_buffer), 1.0 / DEFAULT_ANALYSIS_RATE)
-        mask = (freqs_hz >= 60) & (freqs_hz <= 17000)
-        magnitude = magnitude[mask]
+            fft = np.fft.rfft(self.sample_buffer * np.hanning(len(self.sample_buffer)))
+            magnitude = np.abs(fft)
+            freqs_hz = np.fft.rfftfreq(len(self.sample_buffer), 1.0 / DEFAULT_ANALYSIS_RATE)
+            mask = (freqs_hz >= 60) & (freqs_hz <= 17000)
+            magnitude = magnitude[mask]
 
-        bars_raw = self._calculate_bar_values(magnitude)
-        bars_norm = self._normalize_bars(bars_raw)
-        self.target_levels = [max(0, min(self.segments, v * 0.82)) for v in bars_norm]
-        self._smooth_levels_with_gravity()
-        self.update()
+            bars_raw = self._calculate_bar_values(magnitude)
+            bars_norm = self._normalize_bars(bars_raw)
+            self.target_levels = [max(0, min(self.segments, v * 0.82)) for v in bars_norm]
+            
+            self._smooth_levels_with_gravity()
+            
+            self.update()
+        except Exception as e:
+            print(f"Error in update_from_fft: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _smooth_levels_with_gravity(self):
         gravity = 0.4
@@ -799,41 +830,46 @@ class EqualizerWidget(QWidget):
             self.update()
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        
-        bar_width = self.width() / self.bar_count
-        segment_height = self.height() / self.segments
-        
-        for i, level in enumerate(self.levels):
-            # Draw main bars
-            for seg in range(int(level)):
-                fade_factor = 1.0 - (seg / self.segments)
-                faded_color = QColor(self.color)
-                faded_color.setAlpha(int(255 * fade_factor))
-                
-                rect = QRect(
-                    int(i * bar_width),
-                    int(self.height() - (seg + 1) * segment_height),
-                    int(bar_width * 0.85),
-                    int(segment_height * 0.8)
-                )
-                painter.fillRect(rect, faded_color)
+        try:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing, True)
             
-            # Draw peak hold indicator
-            if self.peak_hold[i] > 0:
-                peak_seg = int(self.peak_hold[i])
-                if peak_seg < self.segments:
-                    peak_color = self._get_peak_color()
-                    peak_color.setAlpha(self.peak_alpha)
+            bar_width = self.width() / self.bar_count
+            segment_height = self.height() / self.segments
+            
+            for i, level in enumerate(self.levels):
+                # Draw main bars
+                for seg in range(int(level)):
+                    fade_factor = 1.0 - (seg / self.segments)
+                    faded_color = QColor(self.color)
+                    faded_color.setAlpha(int(255 * fade_factor))
                     
-                    peak_rect = QRect(
+                    rect = QRect(
                         int(i * bar_width),
-                        int(self.height() - (peak_seg + 1) * segment_height),
+                        int(self.height() - (seg + 1) * segment_height),
                         int(bar_width * 0.85),
-                        int(segment_height * 0.4)
+                        int(segment_height * 0.8)
                     )
-                    painter.fillRect(peak_rect, peak_color)
+                    painter.fillRect(rect, faded_color)
+                
+                # Draw peak hold indicator
+                if self.peak_hold[i] > 0:
+                    peak_seg = int(self.peak_hold[i])
+                    if peak_seg < self.segments:
+                        peak_color = self._get_peak_color()
+                        peak_color.setAlpha(self.peak_alpha)
+                        
+                        peak_rect = QRect(
+                            int(i * bar_width),
+                            int(self.height() - (peak_seg + 1) * segment_height),
+                            int(bar_width * 0.85),
+                            int(segment_height * 0.4)
+                        )
+                        painter.fillRect(peak_rect, peak_color)
+        except Exception as e:
+            print(f"Error in paintEvent: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _get_peak_color(self):
         if self.custom_peak_color:
@@ -1085,7 +1121,7 @@ class AudioPlayerController:
 
     def _stop_equalizer(self):
         if self.eq_widget:
-            self.eq_widget.timer.stop()
+            self.eq_widget.stop()
 
     def _on_gapless_track_change(self, filepath):
         self.gapless_manager._transition_triggered = False
@@ -1534,11 +1570,14 @@ class DirectoryTreeView(QTreeView):
         paths = self._get_paths_from_selection()
         if paths and self.playlist_model:
             controller = self.playlist_model.controller
+            # Stop playback first, then replace playlist and start new track
+            # Use a delay to ensure stop completes before starting new track
             if controller:
                 controller.stop()
             self.playlist_model.add_tracks(paths, clear=True)
             if controller and len(paths) > 0:
-                QTimer.singleShot(50, lambda: self._start_playback_after_overwrite(controller))
+                # Use 200ms delay to ensure stop_equalizer completes before start_equalizer
+                QTimer.singleShot(200, lambda: self._start_playback_after_overwrite(controller))
     
     def _start_playback_after_overwrite(self, controller):
         if controller and controller.model and controller.model.rowCount() > 0:
@@ -2539,10 +2578,13 @@ class SearchResultsDialog(QWidget):
         if not paths:
             return
         
+        # Stop playback first, then replace playlist and start new track
+        self.controller.stop()
         self.playlist_model.add_tracks(paths, clear=True)
         
+        # Use delay to ensure stop_equalizer completes before start_equalizer
         if self.controller.model.rowCount() > 0:
-            self.controller.play_index(0)
+            QTimer.singleShot(200, lambda: self.controller.play_index(0))
         
         self.close()
     
