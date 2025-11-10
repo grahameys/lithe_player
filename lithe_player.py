@@ -2572,7 +2572,7 @@ class SearchResultsDialog(QWidget):
         # Results tree view
         self.results_tree = QTreeView()
         self.results_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.results_tree.setAlternatingRowColors(True)
+        self.results_tree.setAlternatingRowColors(False)
         self.results_tree.setHeaderHidden(False)
         self.results_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.results_tree.customContextMenuRequested.connect(self._show_context_menu)
