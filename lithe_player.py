@@ -1339,6 +1339,8 @@ class PlayingRowDelegate(QStyledItemDelegate):
 
         if index.row() == self.model.current_index and self.model.highlight_color:
             painter.save()
+            # Paint semi-transparent highlight color directly (will blend with whatever is underneath)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
             painter.fillRect(opt.rect, self.model.highlight_color)
             painter.restore()
 
@@ -1355,6 +1357,9 @@ class PlayingRowDelegate(QStyledItemDelegate):
 
         if index.row() == self.hover_row:
             painter.save()
+            # Paint semi-transparent hover color directly (will blend with whatever is underneath)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            
             if self.custom_hover_color:
                 hover_color = QColor(self.custom_hover_color)
                 hover_color.setAlpha(100)
@@ -1437,6 +1442,9 @@ class DirectoryBrowserDelegate(QStyledItemDelegate):
         # Paint hover state
         if (option.state & QStyle.State_MouseOver) and self.hover_index == index:
             painter.save()
+            # Paint semi-transparent hover color directly (will blend with whatever is underneath)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            
             if self.custom_hover_color:
                 hover_color = QColor(self.custom_hover_color)
                 hover_color.setAlpha(100)
@@ -1457,6 +1465,8 @@ class DirectoryBrowserDelegate(QStyledItemDelegate):
 
         if (option.state & QStyle.State_Selected) and self.highlight_color:
             painter.save()
+            # Paint semi-transparent highlight color directly (will blend with whatever is underneath)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
             painter.fillRect(opt.rect, self.highlight_color)
             painter.restore()
 
@@ -2379,16 +2389,10 @@ class SearchResultsDelegate(QStyledItemDelegate):
 
         # Paint hover state BEFORE super().paint() so text renders on top
         if self.hover_index and self.hover_index.row() == index.row() and self.hover_index.parent() == index.parent():
-            # First paint a solid base color to avoid blending with alternating backgrounds
             painter.save()
-            app = QApplication.instance()
-            if app:
-                base_color = app.palette().color(QPalette.Base)
-                painter.fillRect(opt.rect, base_color)
-            painter.restore()
+            # Paint semi-transparent hover color directly (will blend with whatever is underneath)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
             
-            # Then paint the hover color on top
-            painter.save()
             if self.custom_hover_color:
                 hover_color = QColor(self.custom_hover_color)
                 hover_color.setAlpha(100)
@@ -2411,6 +2415,8 @@ class SearchResultsDelegate(QStyledItemDelegate):
         # Paint selection state - always paint the full row
         if (option.state & QStyle.State_Selected) and self.highlight_color:
             painter.save()
+            # Paint semi-transparent highlight color directly (will blend with whatever is underneath)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
             painter.fillRect(opt.rect, self.highlight_color)
             painter.restore()
 
@@ -3630,6 +3636,7 @@ class MainWindow(QMainWindow):
     def on_choose_highlight_color(self):
         color = QColorDialog.getColor()
         if color.isValid():
+            color.setAlpha(100)  # Set transparency for accent color
             self.playlist_model.highlight_color = color
             self.tree_delegate.set_highlight_color(color)
             self.update_tree_stylesheet(color)
@@ -3643,6 +3650,7 @@ class MainWindow(QMainWindow):
         current_color = self.hover_color if self.hover_color else QColor(220, 238, 255)
         color = QColorDialog.getColor(current_color, self, "Choose Hover Color")
         if color.isValid():
+            color.setAlpha(100)  # Set transparency for hover color
             self.hover_color = color
             self.settings.setValue("hoverColor", color.name())
             # Update playlist delegate
@@ -3745,6 +3753,7 @@ class MainWindow(QMainWindow):
         if hover_color_name:
             hover_color = QColor(hover_color_name)
             if hover_color.isValid():
+                hover_color.setAlpha(100)  # Set transparency for hover color
                 self.hover_color = hover_color
                 self.delegate.set_hover_color(hover_color)
                 self.tree_delegate.set_hover_color(hover_color)
@@ -3753,6 +3762,7 @@ class MainWindow(QMainWindow):
         if color_name:
             color = QColor(color_name)
             if color.isValid():
+                color.setAlpha(100)  # Set transparency for accent color
                 self.playlist_model.highlight_color = color
                 self.tree_delegate.set_highlight_color(color)
                 self.update_tree_stylesheet(color)
