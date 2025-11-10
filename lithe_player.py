@@ -39,7 +39,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction, QFont, QColor, QIcon, QPalette, QPixmap, QPainter, 
-    QKeySequence, QShortcut, QImage, QRegion, QPainterPath, QDrag
+    QKeySequence, QShortcut, QImage, QRegion, QPainterPath, QDrag, QBrush
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QSplitter, QTreeView, QTableView,
@@ -1431,15 +1431,38 @@ class DirectoryBrowserDelegate(QStyledItemDelegate):
     
     def paint(self, painter, option, index):
         opt = QStyleOptionViewItem(option)
+        original_rect = QRect(option.rect)  # Save the original rect
         
         model = index.model()
         is_directory = model.isDir(index)
         
+        # Calculate depth for indentation clearing
+        depth = 0
+        parent = index.parent()
+        while parent.isValid():
+            depth += 1
+            parent = parent.parent()
+        
+        # For any item with depth > 0, paint base color over the indentation area
+        if depth > 0 and self.tree_view:
+            indentation_width = self.tree_view.indentation()
+            total_indent = depth * indentation_width
+            
+            painter.save()
+            app = QApplication.instance()
+            if app:
+                base_color = app.palette().color(QPalette.Base)
+                # Paint only the indentation strip
+                indent_rect = QRect(0, original_rect.y(), total_indent, original_rect.height())
+                painter.fillRect(indent_rect, base_color)
+            painter.restore()
+        
+        # For files, adjust the text rect
         if not is_directory and self.tree_view:
-            indentation = self.tree_view.indentation()
-            opt.rect.adjust(-indentation, 0, 0, 0)
+            indentation_width = self.tree_view.indentation()
+            opt.rect.adjust(-indentation_width, 0, 0, 0)
 
-        # Paint hover state
+        # Paint hover state - use original_rect (not adjusted)
         if (option.state & QStyle.State_MouseOver) and self.hover_index == index:
             painter.save()
             # Paint semi-transparent hover color directly (will blend with whatever is underneath)
@@ -1460,14 +1483,14 @@ class DirectoryBrowserDelegate(QStyledItemDelegate):
                         hover_color = QColor(220, 238, 255, 100)
                 else:
                     hover_color = QColor(220, 238, 255, 100)
-            painter.fillRect(opt.rect, hover_color)
+            painter.fillRect(original_rect, hover_color)
             painter.restore()
 
         if (option.state & QStyle.State_Selected) and self.highlight_color:
             painter.save()
             # Paint semi-transparent highlight color directly (will blend with whatever is underneath)
             painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
-            painter.fillRect(opt.rect, self.highlight_color)
+            painter.fillRect(original_rect, self.highlight_color)
             painter.restore()
 
             opt.state &= ~(QStyle.State_Selected | QStyle.State_HasFocus | 
