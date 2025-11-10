@@ -5,7 +5,11 @@
 </p>
 
 <p align="center">
-  <strong>A modern, lightweight audio player with real-time FFT equalizer visualization</strong>
+  <strong>A modern, lightweight audio player with real-time FFT equalizer visualization and instant search</strong>
+</p>
+
+<p align="center">
+  <em>Lithe Player is designed for use with well-organized music libraries. The search feature matches file and folder names only; it does not provide an inbuilt music library or metadata indexing.</em>
 </p>
 
 <p align="center">
@@ -409,6 +413,19 @@ Seamless integration with your operating system:
 - **Open folder** - Load a directory of music files
 - **Choose default folder** - Set startup location for file browser
 - **Reset default folder** - Return to system root view
+
+### Search Feature
+
+Lithe Player includes a fast, integrated search bar for quickly finding tracks and folders in your music library:
+
+- **Location**: The search bar is positioned to the right of the playback controls for easy access.
+- **Instant Filtering**: Type in the search box to instantly filter results in the file browser and playlist.
+- **Folder & Track Results**: Search results display both folders and tracks, with theme-aware folder icons for light/dark mode.
+- **Consistent UI**: Search results use a flat, non-expandable layout with clear hover highlighting, matching the rest of the interface.
+- **Keyboard Support**: Press `Enter` to trigger a search, and use arrow keys to navigate results.
+- **File/Folder Name Search Only**: The search matches file and folder names only; it does not search within track metadata or provide a full music library database.
+
+This feature helps you quickly locate and play music, even in large libraries, provided your collection is well organized by folder and file names.
 
 ---
 

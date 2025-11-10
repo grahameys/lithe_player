@@ -33,7 +33,7 @@ from mutagen.flac import FLAC
 from mutagen.mp4 import MP4
 
 from PySide6.QtCore import (
-    Qt, QDir, QAbstractTableModel, QModelIndex, QSize, QTimer, 
+    Qt, QDir, QAbstractTableModel, QAbstractItemModel, QModelIndex, QSize, QTimer, 
     QRect, QEvent, QAbstractNativeEventFilter, QObject, Signal, QThread,
     QByteArray, QUrl, QMimeData, QRectF
 )
@@ -45,8 +45,9 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QSplitter, QTreeView, QTableView,
     QVBoxLayout, QHBoxLayout, QPushButton, QFileSystemModel, QHeaderView,
     QLabel, QSlider, QFileDialog, QMessageBox, QColorDialog,
-    QStyledItemDelegate, QStyleOptionViewItem, QStyle, QSizePolicy,
-    QAbstractItemView, QSplashScreen, QMenu, QFontComboBox, QFileIconProvider
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle, QSizePolicy, QStyleOption,
+    QAbstractItemView, QSplashScreen, QMenu, QFontComboBox, QFileIconProvider,
+    QLineEdit
 )
 from PySide6 import QtSvg
 from PySide6.QtSvg import QSvgRenderer
@@ -1298,6 +1299,25 @@ class PlayingRowDelegate(QStyledItemDelegate):
             font.setBold(True)
             opt.font = font
 
+        # Draw the expand/collapse arrow manually so it appears on top of the custom background
+        tree_view = getattr(self, 'tree_view', None)
+        if tree_view:
+            style = tree_view.style()
+            branch_rect = style.subElementRect(QStyle.SE_TreeViewDisclosureItem, opt, tree_view)
+            if branch_rect.isValid() and not branch_rect.isEmpty():
+                # Only draw if this is a folder (has children)
+                model = index.model()
+                if model and model.hasChildren(index):
+                    # Determine expanded/collapsed state
+                    expanded = tree_view.isExpanded(index)
+                    # Use the style to draw the arrow
+                    branch_option = QStyleOption()
+                    branch_option.rect = branch_rect
+                    branch_option.state = QStyle.State_Children
+                    if expanded:
+                        branch_option.state |= QStyle.State_Open
+                    style.drawPrimitive(QStyle.PE_IndicatorBranch, branch_option, painter, tree_view)
+
         super().paint(painter, opt, index)
 
 class DirectoryBrowserDelegate(QStyledItemDelegate):
@@ -2025,6 +2045,544 @@ class FontSelectionDialog(QWidget):
         self.font_combo.setCurrentFont(default_font)
         self.size_slider.setValue(default_font.pointSize())
 
+class SearchWorker(QThread):
+    """Background worker thread for searching library."""
+    
+    finished = Signal(list)
+    
+    def __init__(self, directory, query, parent=None):
+        super().__init__(parent)
+        self.directory = directory
+        self.query = query.lower()
+        self.results = []
+    
+    def run(self):
+        """Perform the search in background."""
+        try:
+            matched_folders = set()
+            
+            # Search for matching files and folders
+            for root, dirs, files in os.walk(self.directory):
+                # Check if any folder name matches
+                for dirname in dirs:
+                    if self.query in dirname.lower():
+                        folder_path = os.path.join(root, dirname)
+                        matched_folders.add(folder_path)
+                
+                # Check if current folder was matched (to include all its files)
+                current_folder_matched = root in matched_folders
+                
+                # Search files
+                for filename in files:
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext in SUPPORTED_EXTENSIONS:
+                        # Include file if its name matches OR if it's in a matched folder
+                        if self.query in filename.lower() or current_folder_matched:
+                            filepath = os.path.join(root, filename)
+                            metadata = extract_metadata(filepath, 0)
+                            self.results.append(metadata)
+                        
+        except Exception as e:
+            print(f"Search error: {e}")
+        
+        self.finished.emit(self.results)
+
+class SearchResultsModel(QAbstractItemModel):
+    """Model for search results with folder grouping."""
+    
+    FOLDER_ID = 0xFFFFFFFF  # Use max uint to represent folder items
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.folders = []  # List of (folder_name, [tracks])
+        self.flat_results = []  # Flat list for easy access
+    
+    def set_results(self, results):
+        """Group results by folder/album."""
+        self.beginResetModel()
+        
+        # Group by folder path
+        from collections import defaultdict
+        folder_dict = defaultdict(list)
+        
+        for track in results:
+            folder_path = os.path.dirname(track["path"])
+            folder_name = os.path.basename(folder_path)
+            folder_dict[folder_path].append(track)
+        
+        # Convert to list of (folder_name, folder_path, tracks)
+        self.folders = []
+        for folder_path, tracks in sorted(folder_dict.items()):
+            folder_name = os.path.basename(folder_path)
+            self.folders.append((folder_name, folder_path, tracks))
+        
+        self.flat_results = results
+        self.endResetModel()
+    
+    def index(self, row, column, parent=QModelIndex()):
+        if not self.hasIndex(row, column, parent):
+            return QModelIndex()
+        
+        if not parent.isValid():
+            # Top level (folders) - use FOLDER_ID
+            return self.createIndex(row, column, self.FOLDER_ID)
+        else:
+            # Child level (tracks in folder) - use folder index
+            folder_idx = parent.row()
+            return self.createIndex(row, column, folder_idx)
+    
+    def parent(self, index):
+        if not index.isValid():
+            return QModelIndex()
+        
+        internal_id = index.internalId()
+        if internal_id == self.FOLDER_ID:
+            # Top level item (folder)
+            return QModelIndex()
+        else:
+            # Child item (track) - parent is the folder
+            folder_idx = internal_id
+            return self.createIndex(folder_idx, 0, self.FOLDER_ID)
+    
+    def rowCount(self, parent=QModelIndex()):
+        if not parent.isValid():
+            # Root level - number of folders
+            return len(self.folders)
+        elif parent.internalId() == self.FOLDER_ID:
+            # Folder level - number of tracks in folder
+            folder_idx = parent.row()
+            if folder_idx < len(self.folders):
+                return len(self.folders[folder_idx][2])
+        return 0
+    
+    def columnCount(self, parent=QModelIndex()):
+        return 3
+    
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role == Qt.DisplayRole and orientation == Qt.Horizontal:
+            headers = ["Title/Folder", "Artist", "Album"]
+            return headers[section] if section < len(headers) else None
+        return None
+    
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        
+        internal_id = index.internalId()
+        row = index.row()
+        col = index.column()
+        
+        if internal_id == self.FOLDER_ID:
+            # Folder row
+            if row >= len(self.folders):
+                return None
+            folder_name, folder_path, tracks = self.folders[row]
+            
+            if role == Qt.DisplayRole:
+                if col == 0:
+                    return f"{folder_name} ({len(tracks)} tracks)"
+                return ""
+            elif role == Qt.DecorationRole:
+                if col == 0:
+                    # Return folder icon based on theme
+                    app = QApplication.instance()
+                    if app:
+                        palette = app.palette()
+                        base_color = palette.color(QPalette.Base)
+                        if is_dark_color(base_color):
+                            return QIcon(get_asset_path("dirwhite.svg"))
+                        else:
+                            return QIcon(get_asset_path("dir.svg"))
+                return None
+            elif role == Qt.FontRole:
+                font = QFont()
+                font.setBold(True)
+                return font
+        else:
+            # Track row - internal_id is the folder index
+            folder_idx = internal_id
+            if folder_idx >= len(self.folders):
+                return None
+            tracks = self.folders[folder_idx][2]
+            if row >= len(tracks):
+                return None
+            
+            track = tracks[row]
+            
+            if role == Qt.DisplayRole:
+                if col == 0:
+                    return track.get("title", "")
+                elif col == 1:
+                    return track.get("artist", "")
+                elif col == 2:
+                    return track.get("album", "")
+        
+        return None
+    
+    def get_track_at_index(self, index):
+        """Get track metadata at index."""
+        if not index.isValid():
+            return None
+        
+        internal_id = index.internalId()
+        if internal_id == self.FOLDER_ID:
+            # This is a folder, not a track
+            return None
+        
+        # internal_id is the folder index
+        folder_idx = internal_id
+        row = index.row()
+        if folder_idx < len(self.folders):
+            tracks = self.folders[folder_idx][2]
+            if row < len(tracks):
+                return tracks[row]
+        return None
+    
+    def get_folder_tracks(self, folder_row):
+        """Get all tracks in a folder."""
+        if folder_row < len(self.folders):
+            return self.folders[folder_row][2]
+        return []
+
+class SearchResultsDelegate(QStyledItemDelegate):
+    """Custom delegate for search results tree view highlighting."""
+
+    def __init__(self, tree_view, parent=None):
+        super().__init__(parent)
+        self.tree_view = tree_view
+        self.highlight_color = None
+        self.custom_hover_color = None
+        self.hover_index = None
+    
+    def set_hover_color(self, color):
+        """Set custom hover color."""
+        self.custom_hover_color = color
+        if self.tree_view:
+            self.tree_view.viewport().update()
+    
+    def set_highlight_color(self, color):
+        """Set custom selection color."""
+        self.highlight_color = color
+        if self.tree_view:
+            self.tree_view.viewport().update()
+    
+    def set_hover_index(self, index):
+        """Set the currently hovered index."""
+        if self.hover_index != index:
+            old_index = self.hover_index
+            self.hover_index = index
+            if self.tree_view:
+                # Repaint the old row
+                if old_index and old_index.isValid():
+                    model = self.tree_view.model()
+                    if model:
+                        col_count = model.columnCount(old_index.parent())
+                        for col in range(col_count):
+                            sibling = model.index(old_index.row(), col, old_index.parent())
+                            self.tree_view.update(sibling)
+                # Repaint the new row
+                if index and index.isValid():
+                    model = self.tree_view.model()
+                    if model:
+                        col_count = model.columnCount(index.parent())
+                        for col in range(col_count):
+                            sibling = model.index(index.row(), col, index.parent())
+                            self.tree_view.update(sibling)
+    
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+
+        # Paint hover state BEFORE super().paint() so text renders on top
+        if self.hover_index and self.hover_index.row() == index.row() and self.hover_index.parent() == index.parent():
+            # First paint a solid base color to avoid blending with alternating backgrounds
+            painter.save()
+            app = QApplication.instance()
+            if app:
+                base_color = app.palette().color(QPalette.Base)
+                painter.fillRect(opt.rect, base_color)
+            painter.restore()
+            
+            # Then paint the hover color on top
+            painter.save()
+            if self.custom_hover_color:
+                hover_color = QColor(self.custom_hover_color)
+                hover_color.setAlpha(100)
+            else:
+                app = QApplication.instance()
+                if app:
+                    app_palette = app.palette()
+                    base_color = app_palette.color(QPalette.Base)
+                    if is_dark_color(base_color):
+                        hover_color = QColor(base_color.lighter(120))
+                        hover_color.setAlpha(100)
+                    else:
+                        hover_color = QColor(220, 238, 255, 100)
+                else:
+                    hover_color = QColor(220, 238, 255, 100)
+            painter.fillRect(opt.rect, hover_color)
+            painter.restore()
+
+
+        # Paint selection state - always paint the full row
+        if (option.state & QStyle.State_Selected) and self.highlight_color:
+            painter.save()
+            painter.fillRect(opt.rect, self.highlight_color)
+            painter.restore()
+
+            opt.state &= ~(QStyle.State_Selected | QStyle.State_HasFocus | 
+                          QStyle.State_MouseOver | QStyle.State_Active)
+
+            palette = opt.palette
+            text_color = Qt.white if is_dark_color(self.highlight_color) else Qt.black
+            palette.setColor(QPalette.Text, text_color)
+            palette.setColor(QPalette.HighlightedText, text_color)
+            opt.palette = palette
+
+        super().paint(painter, opt, index)
+
+
+class SearchResultsDialog(QWidget):
+    """Dialog for displaying and interacting with search results."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.Window)
+        self.setWindowTitle("Search Results")
+        self.setWindowIcon(QIcon(get_asset_path("icon.ico")))
+        self.resize(800, 500)
+        
+        self.playlist_model = None
+        self.controller = None
+        
+        layout = QVBoxLayout(self)
+        
+        # Results count label
+        self.count_label = QLabel("No results")
+        self.count_label.setStyleSheet("font-weight: bold; padding: 5px;")
+        layout.addWidget(self.count_label)
+        
+        # Results tree view
+        self.results_tree = QTreeView()
+        self.results_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.results_tree.setAlternatingRowColors(True)
+        self.results_tree.setHeaderHidden(False)
+        self.results_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.results_tree.customContextMenuRequested.connect(self._show_context_menu)
+        self.results_tree.doubleClicked.connect(self._on_double_click)
+        self.results_tree.setExpandsOnDoubleClick(False)
+        self.results_tree.setMouseTracking(True)
+        self.results_tree.setItemsExpandable(False)  # Disable expand/collapse
+        self.results_tree.setRootIsDecorated(False)  # Hide expand indicators
+        self.results_tree.setIndentation(0)  # Remove indentation for child items
+        
+        # Create model and delegate
+        self.model = SearchResultsModel(self)
+        self.results_tree.setModel(self.model)
+        
+        # Create delegate for custom hover/selection colors
+        self.delegate = SearchResultsDelegate(self.results_tree, self)
+        self.results_tree.setItemDelegate(self.delegate)
+        
+        # Track hover state
+        self.results_tree.viewport().installEventFilter(self)
+        
+        # Store colors
+        self.accent_color = None
+        self.hover_color = None
+        
+        layout.addWidget(self.results_tree)
+        
+        # Button layout
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        button_layout.addWidget(close_btn)
+        layout.addLayout(button_layout)
+        
+        # Configure column widths
+        header = self.results_tree.header()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+    
+    def set_results(self, results):
+        """Update the search results."""
+        self.model.set_results(results)
+        
+        # Expand all folders by default
+        self.results_tree.expandAll()
+        
+        count = len(results)
+        if count == 0:
+            self.count_label.setText("No results found")
+        elif count == 1:
+            self.count_label.setText("1 track found")
+        else:
+            self.count_label.setText(f"{count} tracks found")
+    
+    def set_playlist_model(self, model):
+        """Set the playlist model for adding tracks."""
+        self.playlist_model = model
+    
+    def set_controller(self, controller):
+        """Set the controller for playback."""
+        self.controller = controller
+    
+    def set_colors(self, accent_color, hover_color):
+        """Set accent and hover colors for the search results."""
+        self.accent_color = accent_color
+        self.hover_color = hover_color
+        
+        # Apply colors to delegate
+        if self.delegate:
+            self.delegate.set_highlight_color(accent_color)
+            self.delegate.set_hover_color(hover_color)
+        
+        self._update_stylesheet()
+    
+    def eventFilter(self, obj, event):
+        """Track mouse movements for hover effects."""
+        if obj == self.results_tree.viewport():
+            if event.type() == QEvent.MouseMove:
+                pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
+                index = self.results_tree.indexAt(pos)
+                if self.delegate:
+                    self.delegate.set_hover_index(index if index.isValid() else None)
+            elif event.type() == QEvent.Leave:
+                if self.delegate:
+                    self.delegate.set_hover_index(None)
+        return super().eventFilter(obj, event)
+    
+    def _update_stylesheet(self):
+        """Apply custom colors to the tree view."""
+        app = QApplication.instance()
+        if not app:
+            return
+        
+        palette = app.palette()
+        text_color = palette.color(QPalette.Text)
+        
+        # Basic styling only - let Qt handle backgrounds naturally so hover works
+        stylesheet = f"""
+            QTreeView {{
+                border: none;
+                color: {text_color.name()};
+            }}
+            QTreeView::item {{
+                padding: 4px;
+                border: none;
+            }}
+        """
+        
+        self.results_tree.setStyleSheet(stylesheet)
+    
+    def _show_context_menu(self, position):
+        """Show context menu for selected tracks."""
+        selected = self.results_tree.selectedIndexes()
+        if not selected:
+            return
+        
+        menu = QMenu(self)
+        replace_play_action = menu.addAction("Replace Playlist and Play")
+        add_action = menu.addAction("Add to Playlist")
+        play_next_action = menu.addAction("Play Next")
+        
+        action = menu.exec(self.results_tree.viewport().mapToGlobal(position))
+        
+        if action == replace_play_action:
+            self._replace_and_play(selected)
+        elif action == add_action:
+            self._add_to_playlist(selected)
+        elif action == play_next_action:
+            self._play_next(selected)
+    
+    def _on_double_click(self, index):
+        """Handle double-click to replace playlist and play."""
+        if index.isValid():
+            # Always play the track (folders can't be collapsed anymore)
+            self._replace_and_play([index])
+    
+    def _get_tracks_from_selection(self, selected_indexes):
+        """Get all track paths from selected indexes (including folder expansions)."""
+        paths = []
+        processed_folders = set()
+        
+        for index in selected_indexes:
+            if not index.isValid() or index.column() != 0:
+                continue
+            
+            internal_id = index.internalId()
+            
+            if internal_id == self.model.FOLDER_ID:
+                # This is a folder - add all its tracks
+                folder_row = index.row()
+                if folder_row not in processed_folders:
+                    processed_folders.add(folder_row)
+                    tracks = self.model.get_folder_tracks(folder_row)
+                    for track in tracks:
+                        paths.append(track["path"])
+            else:
+                # This is a track
+                track = self.model.get_track_at_index(index)
+                if track:
+                    paths.append(track["path"])
+        
+        return paths
+    
+    def _replace_and_play(self, selected_indexes):
+        """Replace playlist with selected tracks and start playback."""
+        if not self.playlist_model or not self.controller:
+            return
+        
+        paths = self._get_tracks_from_selection(selected_indexes)
+        if not paths:
+            return
+        
+        self.playlist_model.add_tracks(paths, clear=True)
+        
+        if self.controller.model.rowCount() > 0:
+            self.controller.play_index(0)
+        
+        self.close()
+    
+    def _add_to_playlist(self, selected_indexes):
+        """Add selected tracks to playlist."""
+        if not self.playlist_model:
+            return
+        
+        paths = self._get_tracks_from_selection(selected_indexes)
+        if paths:
+            self.playlist_model.add_tracks(paths, clear=False)
+    
+    def _play_next(self, selected_indexes):
+        """Insert selected tracks to play next."""
+        if not self.playlist_model or not self.controller:
+            return
+        
+        paths = self._get_tracks_from_selection(selected_indexes)
+        
+        # Insert after current track
+        insert_position = self.controller.current_index + 1 if self.controller.current_index >= 0 else 0
+        
+        new_items = [
+            extract_metadata(path, i)
+            for i, path in enumerate(paths, start=1)
+            if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS
+        ]
+        
+        if new_items:
+            self.playlist_model.beginInsertRows(QModelIndex(), insert_position, insert_position + len(new_items) - 1)
+            for i, item in enumerate(new_items):
+                self.playlist_model._tracks.insert(insert_position + i, item)
+            self.playlist_model.endInsertRows()
+            
+            if self.playlist_model.current_index >= insert_position:
+                self.playlist_model.current_index += len(new_items)
+            
+            if self.controller:
+                self.controller.refresh_preload()
+
 # ============================================================================
 # GLOBAL MEDIA KEY HANDLER
 # ============================================================================
@@ -2341,6 +2899,14 @@ class MainWindow(QMainWindow):
         self.settings = JsonSettings("lithe_player_config.json")
         self.hover_color = None  # Will be set from settings or default
 
+        # Determine theme for search icon
+        app = QApplication.instance()
+        use_white_icon = False
+        if app:
+            palette = app.palette()
+            base_color = palette.color(QPalette.Base)
+            use_white_icon = is_dark_color(base_color)
+        
         self.icons = {
             "row_play": QIcon(get_asset_path("plplay.svg")),
             "row_play_white": QIcon(get_asset_path("plplaywhite.svg")),
@@ -2348,6 +2914,7 @@ class MainWindow(QMainWindow):
             "row_pause_white": QIcon(get_asset_path("plpausewhite.svg")),
             "ctrl_play": get_themed_icon("play.svg"),
             "ctrl_pause": get_themed_icon("pause.svg"),
+            "search": QIcon(get_asset_path("searchwhite.svg" if use_white_icon else "search.svg")),
         }
 
         self._setup_ui()
@@ -2481,6 +3048,10 @@ class MainWindow(QMainWindow):
         parent_layout.addLayout(bottom_layout)
 
         controls = QHBoxLayout()
+        
+        # Add left padding to balance search box on right (20px spacing + ~240px for icon + search box)
+        controls.addSpacing(260)
+        
         controls.addStretch(1)
         
         self.btn_prev = self._create_button(get_themed_icon("prev.svg"), 24)
@@ -2493,6 +3064,31 @@ class MainWindow(QMainWindow):
             controls.addWidget(btn)
         
         controls.addStretch(1)
+        
+        # Search box on the right with spacing
+        controls.addSpacing(20)
+        self.search_icon_label = QLabel()
+        self.search_icon_label.setPixmap(self.icons["search"].pixmap(16, 16))
+        controls.addWidget(self.search_icon_label)
+        
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("Search library...")
+        self.search_box.setMaximumWidth(200)
+        self.search_box.returnPressed.connect(self.on_search)
+        self.search_box.setStyleSheet("""
+            QLineEdit {
+                padding: 4px 10px;
+                border: 1px solid palette(mid);
+                border-radius: 10px;
+                background: palette(base);
+                font-size: 9pt;
+            }
+            QLineEdit:focus {
+                border: 1px solid palette(highlight);
+            }
+        """)
+        controls.addWidget(self.search_box)
+        
         bottom_layout.addLayout(controls)
 
         progress_row = QHBoxLayout()
@@ -2624,6 +3220,11 @@ class MainWindow(QMainWindow):
         act_browser_font.setStatusTip("Change the file browser font")
         act_browser_font.triggered.connect(self.on_set_browser_font)
         fonts_submenu.addAction(act_browser_font)
+        
+        # Create search results dialog
+        self.search_results_dialog = SearchResultsDialog(self)
+        self.search_results_dialog.set_playlist_model(self.playlist_model)
+        self.search_results_dialog.set_controller(self.controller)
 
     def _setup_connections(self):
         """Connect signals and slots."""
@@ -2970,6 +3571,46 @@ class MainWindow(QMainWindow):
                 ))
             self.playlist.viewport().update()
             self.tree.viewport().update()
+    
+    def on_search(self):
+        """Perform search in the default folder."""
+        query = self.search_box.text().strip()
+        if not query:
+            return
+        
+        default_dir = self.settings.value("default_dir", QDir.rootPath())
+        if not os.path.exists(default_dir):
+            QMessageBox.warning(self, "Search Error", "Default folder not found. Please set a valid default folder.")
+            return
+        
+        # Prevent multiple simultaneous searches
+        if hasattr(self, 'search_worker') and self.search_worker.isRunning():
+            return
+        
+        # Show searching indicator
+        self.search_box.setEnabled(False)
+        self.search_box.setPlaceholderText("Searching...")
+        
+        # Start search in background thread
+        self.search_worker = SearchWorker(default_dir, query, self)
+        self.search_worker.finished.connect(self._on_search_finished)
+        self.search_worker.start()
+    
+    def _on_search_finished(self, results):
+        """Handle search completion."""
+        # Restore search box
+        self.search_box.setEnabled(True)
+        self.search_box.setPlaceholderText("Search library...")
+        
+        # Show results and apply colors
+        self.search_results_dialog.set_results(results)
+        self.search_results_dialog.set_colors(
+            self.playlist_model.highlight_color, 
+            self.hover_color
+        )
+        self.search_results_dialog.show()
+        self.search_results_dialog.raise_()
+        self.search_results_dialog.activateWindow()
 
     # Helper methods
     def _get_audio_files_from_directory(self, directory):
