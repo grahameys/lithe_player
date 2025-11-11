@@ -587,7 +587,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Mutagen** - For metadata extraction capabilities
 - **NumPy** - For FFT calculations
 - **SoundFile** - For audio file decoding
-
+- **My Nephew** - For helping me with tips and testing [@Bennyboy12306(https://github.com/Bennyboy12306)
 ---
 
 ## 👤 Author
@@ -601,8 +601,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📸 Screenshots
 
 ### Main Interface
+Main Window (Light Theme)
 ![Main Window Light](screenshots/main-window.png)
+Main Window (Dark Theme)
 ![Main Window Dark](screenshots/main-window-dark.png)
+Search Result Screen
 ![Search Results](screenshots/search-results.png)
 
 *Clean, modern interface with file browser, playlist, and real-time equalizer*
@@ -617,14 +620,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [x] Dark/light theme compatibility
 - [x] Smart folder double-click behavior
 - [ ] Cross-platform global media key support (macOS, Linux)
-- [ ] Playlist save/load functionality
 - [ ] Shuffle and repeat modes
-- [ ] Search and filter in playlist
-- [ ] Mini player mode
-- [ ] Audio effects and equalizer presets
-- [ ] Lyrics display
-- [ ] Last.fm scrobbling
-- [ ] Plugin system
 
 ---
 
