@@ -2307,9 +2307,9 @@ class SearchResultsModel(QAbstractItemModel):
                     # Show relative path from base directory
                     if self.base_directory and folder_path.startswith(self.base_directory):
                         rel_path = os.path.relpath(folder_path, self.base_directory)
-                        return f"{rel_path} ({len(tracks)} tracks)"
+                        return rel_path
                     else:
-                        return f"{folder_name} ({len(tracks)} tracks)"
+                        return folder_name
                 return ""
             elif role == Qt.DecorationRole:
                 if col == 0:
@@ -2561,6 +2561,7 @@ class SearchResultsDialog(QWidget):
         
         self.playlist_model = None
         self.controller = None
+        self.settings = None  # Will be set by MainWindow
         
         layout = QVBoxLayout(self)
         
@@ -2609,11 +2610,40 @@ class SearchResultsDialog(QWidget):
         button_layout.addWidget(close_btn)
         layout.addLayout(button_layout)
         
-        # Configure column widths
+        # Configure column widths - make them interactive (resizable)
         header = self.results_tree.header()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.Interactive)
+        header.setStretchLastSection(True)
+        
+        # Restore column widths from settings will be called after settings is set
+    
+    def _restore_column_widths(self):
+        """Restore column widths from settings."""
+        if self.settings and self.settings.contains("searchResultsHeader"):
+            self.results_tree.header().restoreState(self.settings.value("searchResultsHeader"))
+    
+    def _restore_geometry(self):
+        """Restore window geometry from settings."""
+        if self.settings and self.settings.contains("searchResultsGeometry"):
+            self.restoreGeometry(self.settings.value("searchResultsGeometry"))
+    
+    def _save_column_widths(self):
+        """Save column widths to settings."""
+        if self.settings:
+            self.settings.setValue("searchResultsHeader", self.results_tree.header().saveState())
+    
+    def _save_geometry(self):
+        """Save window geometry to settings."""
+        if self.settings:
+            self.settings.setValue("searchResultsGeometry", self.saveGeometry())
+    
+    def closeEvent(self, event):
+        """Save column widths and geometry when closing."""
+        self._save_column_widths()
+        self._save_geometry()
+        super().closeEvent(event)
     
     def set_results(self, results, base_directory=None):
         """Update the search results."""
@@ -3469,8 +3499,11 @@ class MainWindow(QMainWindow):
         
         # Create search results dialog
         self.search_results_dialog = SearchResultsDialog(self)
+        self.search_results_dialog.settings = self.settings  # Share settings object
         self.search_results_dialog.set_playlist_model(self.playlist_model)
         self.search_results_dialog.set_controller(self.controller)
+        self.search_results_dialog._restore_column_widths()  # Restore saved column widths
+        self.search_results_dialog._restore_geometry()  # Restore saved position and size
 
     def _setup_connections(self):
         """Connect signals and slots."""
@@ -3687,6 +3720,7 @@ class MainWindow(QMainWindow):
     
     def _on_playlist_font_changed(self, font):
         self.playlist.setFont(font)
+        self.search_results_dialog.results_tree.setFont(font)  # Apply to search results too
         self.settings.setValue("playlistFontFamily", font.family())
         self.settings.setValue("playlistFontSize", font.pointSize())
         self.playlist.viewport().update()
@@ -3937,7 +3971,9 @@ class MainWindow(QMainWindow):
         if self.settings.contains("playlistFontFamily"):
             font_family = self.settings.value("playlistFontFamily")
             font_size = int(self.settings.value("playlistFontSize", 10))
-            self.playlist.setFont(QFont(font_family, font_size))
+            playlist_font = QFont(font_family, font_size)
+            self.playlist.setFont(playlist_font)
+            self.search_results_dialog.results_tree.setFont(playlist_font)  # Apply to search results too
         
         if self.settings.contains("browserFontFamily"):
             font_family = self.settings.value("browserFontFamily")
