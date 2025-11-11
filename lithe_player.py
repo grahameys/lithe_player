@@ -2652,6 +2652,9 @@ class SearchResultsDialog(QWidget):
         # Expand all folders by default
         self.results_tree.expandAll()
         
+        # Scroll to the top
+        self.results_tree.scrollToTop()
+        
         count = len(results)
         if count == 0:
             self.count_label.setText("No results found")
