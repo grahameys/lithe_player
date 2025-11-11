@@ -2161,18 +2161,21 @@ class FontSelectionDialog(QWidget):
 class SearchWorker(QThread):
     """Background worker thread for searching library."""
     
-    finished = Signal(list, str)  # results, base_directory
+    progress = Signal(list, str)  # Progressive results, base_directory
+    finished = Signal(list, str)  # Final results, base_directory
     
     def __init__(self, directory, query, parent=None):
         super().__init__(parent)
         self.directory = directory
         self.query = query.lower()
         self.results = []
+        self.batch_size = 50  # Emit results every 50 matches
     
     def run(self):
         """Perform the search in background."""
         try:
             matched_folders = set()
+            batch = []
             
             # Search for matching files and folders
             for root, dirs, files in os.walk(self.directory):
@@ -2203,6 +2206,16 @@ class SearchWorker(QThread):
                             root in matched_folders):
                             metadata = extract_metadata(filepath, 0)
                             self.results.append(metadata)
+                            batch.append(metadata)
+                            
+                            # Emit progress every batch_size results
+                            if len(batch) >= self.batch_size:
+                                self.progress.emit(batch[:], self.directory)
+                                batch.clear()
+            
+            # Emit any remaining results in the final batch
+            if batch:
+                self.progress.emit(batch[:], self.directory)
                         
         except Exception as e:
             print(f"Search error: {e}")
@@ -2241,6 +2254,36 @@ class SearchResultsModel(QAbstractItemModel):
             self.folders.append((folder_name, folder_path, tracks))
         
         self.flat_results = results
+        self.endResetModel()
+    
+    def add_results(self, batch_results, base_directory=None):
+        """Add a batch of results progressively."""
+        if base_directory:
+            self.base_directory = base_directory
+        
+        # Add new tracks to flat results
+        self.flat_results.extend(batch_results)
+        
+        # Group new batch by folder
+        from collections import defaultdict
+        existing_folders = {fp: (fn, tracks) for fn, fp, tracks in self.folders}
+        
+        for track in batch_results:
+            folder_path = os.path.dirname(track["path"])
+            folder_name = os.path.basename(folder_path)
+            
+            if folder_path in existing_folders:
+                # Add to existing folder
+                existing_folders[folder_path][1].append(track)
+            else:
+                # Create new folder
+                existing_folders[folder_path] = (folder_name, [track])
+        
+        # Rebuild folders list
+        self.beginResetModel()
+        self.folders = []
+        for folder_path, (folder_name, tracks) in sorted(existing_folders.items()):
+            self.folders.append((folder_name, folder_path, tracks))
         self.endResetModel()
     
     def index(self, row, column, parent=QModelIndex()):
@@ -2583,6 +2626,7 @@ class SearchResultsDialog(QWidget):
         self.results_tree.setItemsExpandable(False)  # Disable expand/collapse
         self.results_tree.setRootIsDecorated(False)  # Hide expand indicators
         self.results_tree.setIndentation(20)  # Set indentation for child items
+        self.results_tree.setUniformRowHeights(True)  # Enable uniform row heights for performance
         
         # Create model and delegate
         self.model = SearchResultsModel(self)
@@ -2591,6 +2635,9 @@ class SearchResultsDialog(QWidget):
         # Create delegate for custom hover/selection colors
         self.delegate = SearchResultsDelegate(self.results_tree, self)
         self.results_tree.setItemDelegate(self.delegate)
+        
+        # Set icon size to make rows more compact
+        self.results_tree.setIconSize(QSize(14, 14))
         
         # Track hover state
         self.results_tree.viewport().installEventFilter(self)
@@ -2662,6 +2709,20 @@ class SearchResultsDialog(QWidget):
             self.count_label.setText("1 track found")
         else:
             self.count_label.setText(f"{count} tracks found")
+    
+    def add_results(self, batch_results, base_directory=None):
+        """Add a batch of results progressively."""
+        self.model.add_results(batch_results, base_directory)
+        
+        # Expand new folders
+        self.results_tree.expandAll()
+        
+        # Update count label
+        count = len(self.model.flat_results)
+        if count == 1:
+            self.count_label.setText("1 track found")
+        else:
+            self.count_label.setText(f"{count} tracks found...")
     
     def set_playlist_model(self, model):
         """Set the playlist model for adding tracks."""
@@ -3878,8 +3939,24 @@ class MainWindow(QMainWindow):
         
         # Start search in background thread
         self.search_worker = SearchWorker(default_dir, query, self)
+        self.search_worker.progress.connect(self._on_search_progress)
         self.search_worker.finished.connect(self._on_search_finished)
         self.search_worker.start()
+    
+    def _on_search_progress(self, batch_results, base_directory):
+        """Handle progressive search results."""
+        # Show dialog on first batch if not already shown
+        if not self.search_results_dialog.isVisible():
+            self.search_results_dialog.set_colors(
+                self.playlist_model.highlight_color, 
+                self.hover_color
+            )
+            self.search_results_dialog.show()
+            self.search_results_dialog.raise_()
+            self.search_results_dialog.activateWindow()
+        
+        # Add batch to existing results
+        self.search_results_dialog.add_results(batch_results, base_directory)
     
     def _on_search_finished(self, results, base_directory):
         """Handle search completion."""
@@ -3887,15 +3964,16 @@ class MainWindow(QMainWindow):
         self.search_box.setEnabled(True)
         self.search_box.setPlaceholderText("Search library...")
         
-        # Show results and apply colors
-        self.search_results_dialog.set_results(results, base_directory)
-        self.search_results_dialog.set_colors(
-            self.playlist_model.highlight_color, 
-            self.hover_color
-        )
-        self.search_results_dialog.show()
-        self.search_results_dialog.raise_()
-        self.search_results_dialog.activateWindow()
+        # If dialog wasn't shown yet (no results), show it now
+        if not self.search_results_dialog.isVisible():
+            self.search_results_dialog.set_results(results, base_directory)
+            self.search_results_dialog.set_colors(
+                self.playlist_model.highlight_color, 
+                self.hover_color
+            )
+            self.search_results_dialog.show()
+            self.search_results_dialog.raise_()
+            self.search_results_dialog.activateWindow()
 
     # Helper methods
     def _get_audio_files_from_directory(self, directory):
