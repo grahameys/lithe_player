@@ -389,6 +389,39 @@ The real-time equalizer provides professional-grade visualization:
 - **Customizable Colors** - Automatic complementary colors or manual selection
 - **Adjustable Transparency** - Fine-tune peak indicator visibility
 
+### Smart Search System
+
+Lithe Player features a powerful, real-time search engine for quick track discovery:
+
+#### How Search Works
+- **Instant Results** - Progressive search displays results as they're found (batches of 50 tracks)
+- **Comprehensive Matching** - Searches both filenames and folder names throughout your entire library
+- **Path-Aware** - Matches any part of the file path, making it easy to find albums by artist folder
+- **Live Updates** - Results populate in real-time while the search continues in the background
+- **Folder Grouping** - Results are automatically organized by album/folder for easy browsing
+
+#### Search Features
+- **Resizable Columns** - Adjust Title, Artist, and Album column widths; settings are saved between sessions
+- **Persistent Window** - Search dialog remembers size, position, and column layout
+- **Matched Fonts** - Automatically uses the same font as your playlist for consistency
+- **Compact Display** - Efficiently shows large result sets with minimal row spacing
+- **Smart Scrolling** - Always starts at the top of results for each new search
+
+#### Using Search
+1. Type your query in the search box (top of main window)
+2. Results appear instantly in a dedicated window
+3. Browse grouped results by folder/album
+4. Double-click any track to play immediately
+5. Right-click for context menu options (Play Next, Add to Playlist, etc.)
+6. Resize columns to see full folder paths
+
+**Example Queries:**
+- Search "beethoven" → Finds all tracks in folders containing "beethoven"
+- Search "2024" → Locates all albums from folders with "2024" in the path
+- Search "symphony" → Matches both folder names and track titles
+
+**Note:** Search works best with well-organized music libraries where folder names reflect artist/album information. It searches your file system directly without requiring a database or library import.
+
 ### Theme Compatibility
 
 Seamless integration with your operating system:
