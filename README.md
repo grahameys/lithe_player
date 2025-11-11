@@ -9,10 +9,6 @@
 </p>
 
 <p align="center">
-  <em>Lithe Player is designed for use with well-organized music libraries. The search feature matches file and folder names only; it does not provide an inbuilt music library or metadata indexing.</em>
-</p>
-
-<p align="center">
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.8%2B-blue.svg" alt="Python"></a>
   <a href="https://pypi.org/project/PySide6/"><img src="https://img.shields.io/badge/PySide6-6.4%2B-green.svg" alt="PySide6"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License"></a>
