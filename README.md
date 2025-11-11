@@ -572,7 +572,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📸 Screenshots
 
 ### Main Interface
-![Main Window](screenshots/main-window.png)
+![Main Window Light](screenshots/main-window.png)
+![Main Window Dark](screenshots/main-window-dark.png)
+![Search Results](screenshots/search-results.png)
 
 *Clean, modern interface with file browser, playlist, and real-time equalizer*
 
