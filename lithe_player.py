@@ -35,7 +35,7 @@ from mutagen.mp4 import MP4
 from PySide6.QtCore import (
     Qt, QDir, QAbstractTableModel, QAbstractItemModel, QModelIndex, QSize, QTimer, 
     QRect, QEvent, QAbstractNativeEventFilter, QObject, Signal, QThread,
-    QByteArray, QUrl, QMimeData, QRectF
+    QByteArray, QUrl, QMimeData, QRectF, QSettings
 )
 from PySide6.QtGui import (
     QAction, QFont, QColor, QIcon, QPalette, QPixmap, QPainter, 
@@ -2449,61 +2449,29 @@ class SearchResultsDelegate(QStyledItemDelegate):
                 painter.fillRect(indent_rect, base_color)
             painter.restore()
         
-        # Paint folder rows with accent color background spanning all columns
+        # Paint folder rows with accent color background
         if is_folder and self.highlight_color:
-            # Paint accent background in ALL columns
             painter.save()
             painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
             painter.fillRect(opt.rect, self.highlight_color)
             painter.restore()
             
-            # Only paint text in column 0, spanning across all columns
-            if index.column() == 0:
-                # Calculate full row width
-                model = index.model()
-                col_count = model.columnCount(index.parent()) if model else 1
-                
-                if self.tree_view:
-                    header = self.tree_view.header()
-                    full_width = sum(header.sectionSize(col) for col in range(col_count))
-                    text_rect = QRect(opt.rect.left(), opt.rect.top(), full_width, opt.rect.height())
-                else:
-                    text_rect = opt.rect
-                
-                # Get the text to display
-                display_text = index.data(Qt.DisplayRole)
-                if display_text:
-                    # Get icon
-                    icon = index.data(Qt.DecorationRole)
-                    
-                    # Set text color
-                    text_color = Qt.white if is_dark_color(self.highlight_color) else Qt.black
-                    
-                    painter.save()
-                    painter.setPen(text_color)
-                    
-                    # Paint icon if present
-                    icon_width = 0
-                    if icon and not icon.isNull():
-                        icon_size = opt.decorationSize
-                        icon_rect = QRect(text_rect.left() + 4, text_rect.top() + (text_rect.height() - icon_size.height()) // 2,
-                                         icon_size.width(), icon_size.height())
-                        icon.paint(painter, icon_rect)
-                        icon_width = icon_size.width() + 8
-                    
-                    # Paint text
-                    text_rect.setLeft(text_rect.left() + icon_width)
-                    painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, display_text)
-                    painter.restore()
-                
-                return  # Don't call super().paint() for folder column 0
-            else:
-                return  # Don't paint any content in columns > 0 for folders
-            
+            # Set text color for folders
+            opt.state &= ~(QStyle.State_Selected | QStyle.State_HasFocus | 
+                          QStyle.State_MouseOver | QStyle.State_Active)
+            palette = opt.palette
+            text_color = Qt.white if is_dark_color(self.highlight_color) else Qt.black
+            palette.setColor(QPalette.Text, text_color)
+            palette.setColor(QPalette.HighlightedText, text_color)
+            opt.palette = palette
         else:
-            # For track items, don't manually paint background - let Qt handle alternating rows
-            # Just clear the indentation area (already done above)
-            pass
+            # For track items, clear to base color to remove alternating row colors
+            painter.save()
+            app = QApplication.instance()
+            if app:
+                base_color = app.palette().color(QPalette.Base)
+                painter.fillRect(opt.rect, base_color)
+            painter.restore()
 
         # Paint hover state BEFORE super().paint() so text renders on top
         if self.hover_index and self.hover_index.row() == index.row() and self.hover_index.parent() == index.parent():
@@ -2609,11 +2577,40 @@ class SearchResultsDialog(QWidget):
         button_layout.addWidget(close_btn)
         layout.addLayout(button_layout)
         
-        # Configure column widths
+        # Configure column widths - make them interactive (resizable)
         header = self.results_tree.header()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.Interactive)
+        header.setStretchLastSection(True)
+        
+        # Restore column widths from settings
+        self._restore_column_widths()
+    
+    def _restore_column_widths(self):
+        """Restore column widths from settings."""
+        settings = QSettings("LithePlayer", "SearchResults")
+        header = self.results_tree.header()
+        
+        # Restore each column width
+        for col in range(3):
+            width = settings.value(f"column_{col}_width", None)
+            if width is not None:
+                header.resizeSection(col, int(width))
+    
+    def _save_column_widths(self):
+        """Save column widths to settings."""
+        settings = QSettings("LithePlayer", "SearchResults")
+        header = self.results_tree.header()
+        
+        # Save each column width
+        for col in range(3):
+            settings.setValue(f"column_{col}_width", header.sectionSize(col))
+    
+    def closeEvent(self, event):
+        """Save column widths when closing."""
+        self._save_column_widths()
+        super().closeEvent(event)
     
     def set_results(self, results, base_directory=None):
         """Update the search results."""
