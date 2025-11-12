@@ -3389,8 +3389,8 @@ class MainWindow(QMainWindow):
 
         controls = QHBoxLayout()
         
-        # Add left padding to balance search box on right (20px spacing + ~240px for icon + search box)
-        controls.addSpacing(260)
+        # Add left padding to balance search box on right (adjusted for 5 buttons instead of 4)
+        controls.addSpacing(240)
         
         controls.addStretch(1)
         
@@ -3398,8 +3398,10 @@ class MainWindow(QMainWindow):
         self.btn_playpause = self._create_button(get_themed_icon("play.svg"), 24)
         self.btn_stop = self._create_button(get_themed_icon("stop.svg"), 24)
         self.btn_next = self._create_button(get_themed_icon("next.svg"), 24)
+        self.btn_shuffle = self._create_button(get_themed_icon("shuffle.svg"), 24)
+        self.btn_shuffle.setToolTip("Shuffle playlist")
         
-        for btn in [self.btn_prev, self.btn_playpause, self.btn_stop, self.btn_next]:
+        for btn in [self.btn_prev, self.btn_playpause, self.btn_stop, self.btn_next, self.btn_shuffle]:
             btn.setStyleSheet(self.get_button_style())
             controls.addWidget(btn)
         
@@ -3575,6 +3577,7 @@ class MainWindow(QMainWindow):
         self.btn_stop.clicked.connect(self.on_stop_clicked)
         self.btn_prev.clicked.connect(self.on_prev_clicked)
         self.btn_next.clicked.connect(self.on_next_clicked)
+        self.btn_shuffle.clicked.connect(self.on_shuffle_clicked)
         self.slider_vol.valueChanged.connect(self.on_volume_changed)
         self.progress_slider.sliderReleased.connect(self.on_seek)
         self.tree.doubleClicked.connect(self.on_tree_double_click)
@@ -3704,6 +3707,47 @@ class MainWindow(QMainWindow):
     def on_next_clicked(self):
         self.controller.next()
         self.update_playback_ui()
+    
+    def on_shuffle_clicked(self):
+        """Shuffle the current playlist, keeping the currently playing track at the top."""
+        import random
+        
+        row_count = self.playlist_model.rowCount()
+        if row_count <= 1:
+            return  # Nothing to shuffle
+        
+        # Get currently playing track index
+        current_index = self.controller.current_index
+        current_track = None
+        
+        if current_index >= 0 and current_index < row_count:
+            current_track = self.playlist_model.get_filepath(current_index)
+        
+        # Get all tracks
+        tracks = []
+        for row in range(row_count):
+            filepath = self.playlist_model.get_filepath(row)
+            if filepath:
+                tracks.append(filepath)
+        
+        # If there's a playing track, remove it from the list, shuffle the rest, then put it at the top
+        if current_track and current_track in tracks:
+            tracks.remove(current_track)
+            random.shuffle(tracks)
+            tracks.insert(0, current_track)
+            new_current_index = 0
+        else:
+            # No playing track, just shuffle everything
+            random.shuffle(tracks)
+            new_current_index = -1
+        
+        # Reload playlist with shuffled tracks
+        self.playlist_model.add_tracks(tracks, clear=True)
+        
+        # Update current index
+        if new_current_index >= 0:
+            self.controller.current_index = new_current_index
+            self.playlist_model.set_current_index(new_current_index)
 
     def on_volume_changed(self, volume):
         self.controller.set_volume(volume)
