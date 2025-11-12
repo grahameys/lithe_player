@@ -4067,6 +4067,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'search_worker') and self.search_worker.isRunning():
             return
         
+        # Clear previous search results before starting new search
+        self.search_results_dialog.model.set_results([], default_dir)
+        
         # Show searching indicator
         self.search_box.setEnabled(False)
         self.search_box.setPlaceholderText("Searching...")
