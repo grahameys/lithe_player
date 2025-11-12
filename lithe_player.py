@@ -2603,6 +2603,33 @@ class SearchResultsDelegate(QStyledItemDelegate):
             opt.palette = palette
 
         super().paint(painter, opt, index)
+        
+        # Draw cell borders for track items (not folders) using the same color as the playlist
+        if not is_folder and self.highlight_color:
+            painter.save()
+            
+            # Determine the grid color based on theme
+            app = QApplication.instance()
+            if app:
+                palette_obj = app.palette()
+                base_color = palette_obj.color(QPalette.Base)
+                if is_dark_color(base_color):
+                    # Use mid color for dark themes
+                    grid_color = palette_obj.color(QPalette.Mid)
+                else:
+                    # Use light gray for light themes
+                    grid_color = QColor("#ddd")
+            else:
+                grid_color = QColor("#ddd")
+            
+            # Draw the right border
+            painter.setPen(grid_color)
+            painter.drawLine(opt.rect.topRight(), opt.rect.bottomRight())
+            
+            # Draw the bottom border
+            painter.drawLine(opt.rect.bottomLeft(), opt.rect.bottomRight())
+            
+            painter.restore()
 
 
 class SearchResultsDialog(QWidget):
