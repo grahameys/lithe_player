@@ -603,12 +603,12 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ### Main Interface
 Main Window (Light Theme)
 ![Main Window Light](screenshots/main-window.png)
+
 Main Window (Dark Theme)
 ![Main Window Dark](screenshots/main-window-dark.png)
+
 Search Result Screen
 ![Search Results](screenshots/search-results.png)
-
-*Clean, modern interface with file browser, playlist, and real-time equalizer*
 
 ---
 
@@ -619,8 +619,8 @@ Search Result Screen
 - [x] Context menus for quick actions
 - [x] Dark/light theme compatibility
 - [x] Smart folder double-click behavior
+- [x] Shuffle mode
 - [ ] Cross-platform global media key support (macOS, Linux)
-- [ ] Shuffle and repeat modes
 
 ---
 
