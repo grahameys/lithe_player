@@ -3788,19 +3788,22 @@ class MainWindow(QMainWindow):
         
         if os.path.isfile(path):
             if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
+                self.controller.stop()
                 self.playlist_model.add_tracks([path], clear=True)
-                self.controller.play_index(0)
+                QTimer.singleShot(200, lambda: self.controller.play_index(0))
                 self.update_playback_ui()
         elif os.path.isdir(path):
-            playlist_is_empty = self.playlist_model.rowCount() == 0
+            # If folder is not expanded, just expand it on first double-click
+            if not self.tree.isExpanded(index):
+                return  # Let the default expand behavior happen
             
-            if playlist_is_empty:
-                files = self._get_audio_files_from_directory(path)
-                if files:
-                    self.playlist_model.add_tracks(files, clear=True)
-                    self.controller.play_index(0)
-                    self.update_playback_ui()
-                    return
+            # Folder is already expanded, so load it into playlist
+            files = self._get_audio_files_from_directory(path)
+            if files:
+                self.controller.stop()
+                self.playlist_model.add_tracks(files, clear=True)
+                QTimer.singleShot(200, lambda: self.controller.play_index(0))
+                self.update_playback_ui()
 
     def on_tree_expanded(self, index):
         parent = index.parent()
