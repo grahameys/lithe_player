@@ -153,6 +153,7 @@ def extract_metadata(path, trackno):
     """Extract metadata from audio file."""
     title = os.path.splitext(os.path.basename(path))[0]
     artist = album = year = ""
+    metadata_trackno = None
     
     try:
         audio = MutagenFile(path, easy=True)
@@ -161,11 +162,22 @@ def extract_metadata(path, trackno):
             artist = audio.get("artist", [""])[0]
             album = audio.get("album", [""])[0]
             year = audio.get("date", audio.get("year", [""]))[0]
+            
+            # Extract track number from metadata
+            tracknumber = audio.get("tracknumber", [""])[0]
+            if tracknumber:
+                # Handle formats like "5/12" or "5"
+                if '/' in tracknumber:
+                    tracknumber = tracknumber.split('/')[0]
+                try:
+                    metadata_trackno = int(tracknumber)
+                except (ValueError, TypeError):
+                    pass
     except Exception:
         pass
     
     return {
-        "trackno": trackno,
+        "trackno": metadata_trackno if metadata_trackno is not None else trackno,
         "title": title,
         "artist": artist,
         "album": album,
@@ -3318,12 +3330,43 @@ class MainWindow(QMainWindow):
         if not index.isValid():
             return
         
-        # Check if it's a directory
+        path = self.fs_model.filePath(index)
+        
+        # Handle files
+        if os.path.isfile(path):
+            if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
+                self.controller.stop()
+                self.playlist_model.add_tracks([path], clear=True)
+                QTimer.singleShot(200, lambda: self.controller.play_index(0))
+                self.update_playback_ui()
+            return
+        
+        # Handle directories
         if self.fs_model.isDir(index):
-            # If already expanded, load the folder to playlist
+            playlist_is_empty = self.playlist_model.rowCount() == 0
+            
+            # If playlist is empty, always load the folder and play
+            if playlist_is_empty:
+                folder_path = self.fs_model.filePath(index)
+                files = self._get_audio_files_from_directory(folder_path)
+                if files:
+                    self.controller.stop()
+                    self.playlist_model.add_tracks(files, clear=True)
+                    QTimer.singleShot(200, lambda: self.controller.play_index(0))
+                    self.update_playback_ui()
+                return
+            
+            # If already expanded, load the folder to playlist and keep it expanded
             if self.tree.isExpanded(index):
                 folder_path = self.fs_model.filePath(index)
-                self._load_folder_to_playlist(folder_path)
+                files = self._get_audio_files_from_directory(folder_path)
+                if files:
+                    self.controller.stop()
+                    self.playlist_model.add_tracks(files, clear=True)
+                    QTimer.singleShot(200, lambda: self.controller.play_index(0))
+                    self.update_playback_ui()
+                    # Keep folder expanded
+                    QTimer.singleShot(0, lambda: self.tree.setExpanded(index, True))
             # If not expanded, it will expand automatically (default behavior)
     
     def _load_folder_to_playlist(self, folder_path):
@@ -3580,7 +3623,6 @@ class MainWindow(QMainWindow):
         self.btn_shuffle.clicked.connect(self.on_shuffle_clicked)
         self.slider_vol.valueChanged.connect(self.on_volume_changed)
         self.progress_slider.sliderReleased.connect(self.on_seek)
-        self.tree.doubleClicked.connect(self.on_tree_double_click)
         self.tree.expanded.connect(self.on_tree_expanded)
         self.playlist.doubleClicked.connect(self.on_playlist_double_click)
         self.on_volume_changed(self.slider_vol.value())
@@ -3793,17 +3835,35 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(200, lambda: self.controller.play_index(0))
                 self.update_playback_ui()
         elif os.path.isdir(path):
-            # If folder is not expanded, just expand it on first double-click
-            if not self.tree.isExpanded(index):
-                return  # Let the default expand behavior happen
+            playlist_is_empty = self.playlist_model.rowCount() == 0
+            is_expanded = self.tree.isExpanded(index)
             
-            # Folder is already expanded, so load it into playlist
+            # If playlist is empty, always load the folder and play (don't expand)
+            if playlist_is_empty:
+                files = self._get_audio_files_from_directory(path)
+                if files:
+                    self.controller.stop()
+                    self.playlist_model.add_tracks(files, clear=True)
+                    QTimer.singleShot(200, lambda: self.controller.play_index(0))
+                    self.update_playback_ui()
+                # Prevent default expand behavior by collapsing if it just expanded
+                if not is_expanded:
+                    QTimer.singleShot(0, lambda: self.tree.collapse(index))
+                return
+            
+            # If folder is not expanded, let it expand (default behavior)
+            if not is_expanded:
+                return  # Let default expand happen
+            
+            # Folder is already expanded and playlist has content, so load it into playlist
             files = self._get_audio_files_from_directory(path)
             if files:
                 self.controller.stop()
                 self.playlist_model.add_tracks(files, clear=True)
                 QTimer.singleShot(200, lambda: self.controller.play_index(0))
                 self.update_playback_ui()
+                # Keep folder expanded - collapse it first, then re-expand to prevent default toggle
+                QTimer.singleShot(0, lambda: self.tree.setExpanded(index, True))
 
     def on_tree_expanded(self, index):
         parent = index.parent()
