@@ -2680,6 +2680,18 @@ class SearchResultsDelegate(QStyledItemDelegate):
             painter.restore()
 
 
+class SearchResultsTreeView(QTreeView):
+    """Custom tree view for search results that handles double-clicks properly."""
+    
+    double_clicked = Signal(QModelIndex)
+    
+    def mouseDoubleClickEvent(self, event):
+        """Handle mouse double-click events."""
+        index = self.indexAt(event.pos())
+        if index.isValid():
+            self.double_clicked.emit(index)
+        super().mouseDoubleClickEvent(event)
+
 class SearchResultsDialog(QWidget):
     """Dialog for displaying and interacting with search results."""
     
@@ -2701,14 +2713,15 @@ class SearchResultsDialog(QWidget):
         layout.addWidget(self.count_label)
         
         # Results tree view
-        self.results_tree = QTreeView()
+        self.results_tree = SearchResultsTreeView()
+        self.results_tree.double_clicked.connect(self._on_double_click)
         self.results_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.results_tree.setAlternatingRowColors(False)
         self.results_tree.setHeaderHidden(False)
         self.results_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.results_tree.customContextMenuRequested.connect(self._show_context_menu)
-        self.results_tree.doubleClicked.connect(self._on_double_click)
-        self.results_tree.setExpandsOnDoubleClick(False)
+        # Don't use doubleClicked signal - we'll handle it via mouse events instead
+        self.results_tree.setExpandsOnDoubleClick(True)
         self.results_tree.setMouseTracking(True)
         self.results_tree.setItemsExpandable(False)  # Disable expand/collapse
         self.results_tree.setRootIsDecorated(False)  # Hide expand indicators
@@ -2777,6 +2790,13 @@ class SearchResultsDialog(QWidget):
         """Save column widths and geometry when closing."""
         self._save_column_widths()
         self._save_geometry()
+        # Stop the search worker if it's running
+        if hasattr(self.parent(), 'search_worker') and self.parent().search_worker and self.parent().search_worker.isRunning():
+            self.parent().search_worker.quit()
+            self.parent().search_worker.wait()
+        # Notify parent that user closed the dialog so search doesn't reopen it
+        if self.parent():
+            self.parent().search_results_closed = True
         super().closeEvent(event)
     
     def set_results(self, results, base_directory=None):
@@ -2890,6 +2910,9 @@ class SearchResultsDialog(QWidget):
     def _on_double_click(self, index):
         """Handle double-click to replace playlist and play."""
         if index.isValid():
+            # Set flag to prevent search dialog from reopening
+            if self.parent():
+                self.parent().search_results_closed = True
             # Always play the track (folders can't be collapsed anymore)
             self._replace_and_play([index])
     
@@ -2899,8 +2922,12 @@ class SearchResultsDialog(QWidget):
         processed_folders = set()
         
         for index in selected_indexes:
-            if not index.isValid() or index.column() != 0:
+            if not index.isValid():
                 continue
+            
+            # Get the index at column 0 for this row (to ensure we're on the first column)
+            if index.column() != 0:
+                index = index.sibling(index.row(), 0)
             
             internal_id = index.internalId()
             
@@ -2909,14 +2936,27 @@ class SearchResultsDialog(QWidget):
                 folder_row = index.row()
                 if folder_row not in processed_folders:
                     processed_folders.add(folder_row)
-                    tracks = self.model.get_folder_tracks(folder_row)
-                    for track in tracks:
-                        paths.append(track["path"])
+                    if folder_row < len(self.model.folders):
+                        folder_tuple = self.model.folders[folder_row]
+                        # folder_tuple is (folder_name, folder_path, tracks)
+                        if len(folder_tuple) >= 3:
+                            tracks = folder_tuple[2]
+                            for track in tracks:
+                                if isinstance(track, dict) and "path" in track:
+                                    paths.append(track["path"])
             else:
                 # This is a track
-                track = self.model.get_track_at_index(index)
-                if track:
-                    paths.append(track["path"])
+                folder_idx = internal_id
+                row = index.row()
+                if folder_idx < len(self.model.folders):
+                    folder_tuple = self.model.folders[folder_idx]
+                    # folder_tuple is (folder_name, folder_path, tracks)
+                    if len(folder_tuple) >= 3:
+                        tracks = folder_tuple[2]
+                        if row < len(tracks):
+                            track = tracks[row]
+                            if isinstance(track, dict) and "path" in track:
+                                paths.append(track["path"])
         
         return paths
     
@@ -2936,6 +2976,10 @@ class SearchResultsDialog(QWidget):
         # Use delay to ensure stop_equalizer completes before start_equalizer
         if self.controller.model.rowCount() > 0:
             QTimer.singleShot(200, lambda: self.controller.play_index(0))
+        
+        # Set flag to prevent search dialog from reopening
+        if self.parent():
+            self.parent().search_results_closed = True
         
         self.close()
     
@@ -3319,6 +3363,7 @@ class MainWindow(QMainWindow):
         self.peak_transparency_dialog = None
         self.playlist_font_dialog = None
         self.browser_font_dialog = None
+        self.search_results_closed = False  # Track if user closed search dialog
         self._setup_global_media_keys()
 
         self.restore_settings()
@@ -4115,6 +4160,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'search_worker') and self.search_worker.isRunning():
             return
         
+        # Reset the closed flag when starting a new search
+        self.search_results_closed = False
+        
         # Clear previous search results before starting new search
         self.search_results_dialog.model.set_results([], default_dir)
         
@@ -4130,6 +4178,10 @@ class MainWindow(QMainWindow):
     
     def _on_search_progress(self, batch_results, base_directory):
         """Handle progressive search results."""
+        # If user closed the dialog, don't reopen it
+        if self.search_results_closed:
+            return
+        
         # Show dialog on first batch if not already shown
         if not self.search_results_dialog.isVisible():
             self.search_results_dialog.set_colors(
@@ -4149,16 +4201,8 @@ class MainWindow(QMainWindow):
         self.search_box.setEnabled(True)
         self.search_box.setPlaceholderText("Search library...")
         
-        # If dialog wasn't shown yet (no results), show it now
-        if not self.search_results_dialog.isVisible():
-            self.search_results_dialog.set_results(results, base_directory)
-            self.search_results_dialog.set_colors(
-                self.playlist_model.highlight_color, 
-                self.hover_color
-            )
-            self.search_results_dialog.show()
-            self.search_results_dialog.raise_()
-            self.search_results_dialog.activateWindow()
+        # Reset the closed flag for next search
+        self.search_results_closed = False
 
     # Helper methods
     def _get_audio_files_from_directory(self, directory):
