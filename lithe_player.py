@@ -154,6 +154,8 @@ def extract_metadata(path, trackno):
     title = os.path.splitext(os.path.basename(path))[0]
     artist = album = year = ""
     metadata_trackno = None
+    file_format = ""
+    bitrate = ""
     
     try:
         audio = MutagenFile(path, easy=True)
@@ -176,13 +178,39 @@ def extract_metadata(path, trackno):
     except Exception:
         pass
     
+    # Extract format and bitrate
+    try:
+        ext = os.path.splitext(path)[1].lower()
+        file_format = ext.lstrip('.').upper()
+        
+        # Try to get bitrate information
+        try:
+            if path.lower().endswith(".mp3"):
+                audio = MP3(path)
+                if audio.info.bitrate:
+                    bitrate = f"{audio.info.bitrate // 1000} kbps"
+            elif path.lower().endswith(".flac"):
+                audio = FLAC(path)
+                if audio.info.bitrate:
+                    bitrate = f"{audio.info.bitrate // 1000} kbps"
+            elif path.lower().endswith((".m4a", ".mp4", ".aac")):
+                audio = MP4(path)
+                if audio.info.bitrate:
+                    bitrate = f"{audio.info.bitrate // 1000} kbps"
+        except Exception:
+            pass
+    except Exception:
+        pass
+    
     return {
         "trackno": metadata_trackno if metadata_trackno is not None else trackno,
         "title": title,
         "artist": artist,
         "album": album,
         "year": year,
-        "path": path
+        "path": path,
+        "format": file_format,
+        "bitrate": bitrate
     }
 
 # ============================================================================
@@ -1203,7 +1231,17 @@ class AudioPlayerController:
                         track = self.model._tracks[i]
                         artist = track.get("artist", "Unknown Artist")
                         title = track.get("title", "Unknown Track")
-                        main_window.setWindowTitle(f"{artist} - {title}")
+                        format_str = track.get("format", "")
+                        bitrate_str = track.get("bitrate", "")
+                        info_str = f"{artist} - {title}"
+                        if format_str or bitrate_str:
+                            info_parts = []
+                            if format_str:
+                                info_parts.append(format_str)
+                            if bitrate_str:
+                                info_parts.append(bitrate_str)
+                            info_str += f" [{', '.join(info_parts)}]"
+                        main_window.setWindowTitle(info_str)
                     
                     self.gapless_manager.current_track_path = filepath
                     self._preload_next()
@@ -1257,7 +1295,17 @@ class AudioPlayerController:
             track = self.model._tracks[index]
             artist = track.get("artist", "Unknown Artist")
             title = track.get("title", "Unknown Track")
-            main_window.setWindowTitle(f"{artist} - {title}")
+            format_str = track.get("format", "")
+            bitrate_str = track.get("bitrate", "")
+            info_str = f"{artist} - {title}"
+            if format_str or bitrate_str:
+                info_parts = []
+                if format_str:
+                    info_parts.append(format_str)
+                if bitrate_str:
+                    info_parts.append(bitrate_str)
+                info_str += f" [{', '.join(info_parts)}]"
+            main_window.setWindowTitle(info_str)
 
     def _preload_next(self):
         if not self.model or self.current_index < 0:
