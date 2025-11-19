@@ -676,6 +676,7 @@ class EqualizerWidget(QWidget):
         self.peak_hold_time = [0] * bar_count
         self.velocity = [0] * bar_count
         self.color = QColor("#00cc66")
+        self.background_color = QColor("#000000")  # Default black background
         self.custom_peak_color = None
         self.peak_alpha = 255
         self.buffer_size = ANALYSIS_CHUNK_SAMPLES
@@ -702,6 +703,15 @@ class EqualizerWidget(QWidget):
         
     def set_peak_alpha(self, alpha: int):
         self.peak_alpha = max(0, min(255, alpha))
+        self.update()
+    
+    def set_background_color(self, color: QColor):
+        if color and color.isValid():
+            self.background_color = color
+            self.update()
+    
+    def reset_background_color(self):
+        self.background_color = QColor("#000000")
         self.update()
 
     def start(self, filepath):
@@ -908,6 +918,10 @@ class EqualizerWidget(QWidget):
         try:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.Antialiasing, True)
+            
+            # Fill background if a color is set
+            if self.background_color is not None:
+                painter.fillRect(self.rect(), self.background_color)
             
             bar_width = self.width() / self.bar_count
             segment_height = self.height() / self.segments
@@ -3365,6 +3379,9 @@ class MainWindow(QMainWindow):
         self.browser_font_dialog = None
         self.search_results_closed = False  # Track if user closed search dialog
         self._setup_global_media_keys()
+        
+        # Hide status bar
+        self.statusBar().hide()
 
         self.restore_settings()
 
@@ -3713,6 +3730,24 @@ class MainWindow(QMainWindow):
         act_peak_transparency.triggered.connect(self.on_adjust_peak_transparency)
         equalizer_submenu.addAction(act_peak_transparency)
         
+        equalizer_submenu.addSeparator()
+        
+        act_background_none = QAction("&None", self)
+        act_background_none.setStatusTip("Use system default background color")
+        act_background_none.triggered.connect(self.on_set_equalizer_background_none)
+        equalizer_submenu.addAction(act_background_none)
+        
+        act_background_color = QAction("&Background Color...", self)
+        act_background_color.setStatusTip("Change the spectrum visualizer background color")
+        act_background_color.triggered.connect(self.on_choose_equalizer_background_color)
+        equalizer_submenu.addAction(act_background_color)
+        
+        self.reset_background_color_act = QAction("&Reset Background Color", self)
+        self.reset_background_color_act.setStatusTip("Reset background color to default")
+        self.reset_background_color_act.triggered.connect(self.on_reset_equalizer_background_color)
+        self.reset_background_color_act.setEnabled(False)
+        equalizer_submenu.addAction(self.reset_background_color_act)
+        
         # Fonts submenu
         fonts_submenu = appearance_menu.addMenu("&Fonts")
         
@@ -4052,7 +4087,6 @@ class MainWindow(QMainWindow):
             self.equalizer.set_peak_color(color)
             self.settings.setValue("peakColor", color.name())
             self.reset_peak_color_act.setEnabled(True)
-            self.statusBar().showMessage(f"Peak indicator colour set to {color.name()}", 3000)
                 
     def on_reset_peak_color(self):
         reply = QMessageBox.question(
@@ -4066,6 +4100,33 @@ class MainWindow(QMainWindow):
             self.equalizer.reset_peak_color()
             self.settings.remove("peakColor")
             self.reset_peak_color_act.setEnabled(False)
+    
+    def on_choose_equalizer_background_color(self):
+        current_color = self.equalizer.background_color if self.equalizer.background_color is not None else QColor("#000000")
+        color = QColorDialog.getColor(current_color, self, "Choose Spectrum Visualizer Background Color")
+        if color.isValid():
+            self.equalizer.set_background_color(color)
+            self.settings.setValue("equalizerBackgroundColor", color.name())
+            self.reset_background_color_act.setEnabled(True)
+    
+    def on_reset_equalizer_background_color(self):
+        reply = QMessageBox.question(
+            self, "Reset Spectrum Background Color",
+            "Reset spectrum visualizer background color to default (black)?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.equalizer.reset_background_color()
+            self.settings.remove("equalizerBackgroundColor")
+            self.reset_background_color_act.setEnabled(False)
+    
+    def on_set_equalizer_background_none(self):
+        """Set equalizer background to transparent (system default)."""
+        self.equalizer.background_color = None
+        self.equalizer.update()
+        self.settings.setValue("equalizerBackgroundColor", "none")
+        self.reset_background_color_act.setEnabled(True)
     
     def on_add_folder_clicked(self):
         folder = QFileDialog.getExistingDirectory(self, "Choose music folder", QDir.homePath())
@@ -4087,12 +4148,10 @@ class MainWindow(QMainWindow):
             self.settings.setValue("default_dir", folder)
             self.fs_model.setRootPath(folder)
             self.tree.setRootIndex(self.fs_model.index(folder))
-            self.statusBar().showMessage(f"Default folder set to {folder}", 3000)
             self.update_reset_action_state()
 
     def on_reset_default_folder(self):
         if not self.settings.contains("default_dir"):
-            self.statusBar().showMessage("No default folder set", 3000)
             return
         
         reply = QMessageBox.question(
@@ -4107,7 +4166,6 @@ class MainWindow(QMainWindow):
             root = QDir.rootPath()
             self.fs_model.setRootPath(root)
             self.tree.setRootIndex(self.fs_model.index(root))
-            self.statusBar().showMessage("Default folder reset – showing all drives", 3000)
             self.update_reset_action_state()
 
     def on_choose_highlight_color(self):
@@ -4214,7 +4272,7 @@ class MainWindow(QMainWindow):
                     if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
                         files.append(path)
         except PermissionError:
-            self.statusBar().showMessage("Permission denied for this folder", 3000)
+            pass
         return files
     
     def _auto_populate_playlist_on_startup(self, directory):
@@ -4277,6 +4335,22 @@ class MainWindow(QMainWindow):
         if self.settings.contains("peakAlpha"):
             peak_alpha = int(self.settings.value("peakAlpha"))
             self.equalizer.set_peak_alpha(peak_alpha)
+        
+        if self.settings.contains("equalizerBackgroundColor"):
+            bg_color_name = self.settings.value("equalizerBackgroundColor")
+            if bg_color_name == "none":
+                self.equalizer.background_color = None
+                self.equalizer.update()
+                self.reset_background_color_act.setEnabled(True)
+            else:
+                bg_color = QColor(bg_color_name)
+                if bg_color.isValid():
+                    self.equalizer.set_background_color(bg_color)
+                    self.reset_background_color_act.setEnabled(True)
+                else:
+                    self.reset_background_color_act.setEnabled(False)
+        else:
+            self.reset_background_color_act.setEnabled(False)
 
         if self.settings.contains("playlistFontFamily"):
             font_family = self.settings.value("playlistFontFamily")
